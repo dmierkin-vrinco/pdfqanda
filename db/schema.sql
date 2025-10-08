@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS kb.markdowns (
     token_count INTEGER NOT NULL,
     start_page INTEGER,
     end_page INTEGER,
-    emb VECTOR(3072),
+    emb VECTOR(1536),
     tsv tsvector
 );
 

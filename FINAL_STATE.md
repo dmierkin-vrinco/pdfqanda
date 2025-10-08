@@ -43,7 +43,7 @@ It fuses robust PDF parsing, structured storage (Postgres + pgvector), multi-age
 
 * **documents** — metadata (`id, title, sha256, meta`)
 * **sections** — hierarchy & page spans (`level, start_page, end_page`)
-* **markdowns** — semantic text chunks (`content, emb VECTOR(3072), tsv`)
+* **markdowns** — semantic text chunks (`content, emb VECTOR(1536), tsv`)
 * **notes** — footnotes / annotations (`kind, ref_anchor, content`)
 * **graphics** — images / figures (`bbox, nearby_text, path, sha256`)
 * **tables_metadata** — links to `pdf_tables.*` (`columns_json, units_json`)
@@ -67,7 +67,7 @@ Indices:
 5. **Notes Extraction** — detect bottom-page or footnote patterns; link refs.
 6. **Graphics Capture** — extract image bytes → `.png`, record bbox + nearby text.
 7. **Semantic Segmentation** — LLM-guided chunks (~1 k tokens + 12% overlap).
-8. **Embedding + FTS** — compute `text-embedding-3-large`; build tsvector.
+8. **Embedding + FTS** — compute `text-embedding-3-small`; build tsvector.
 9. **Commit** — insert all entities in one transaction; write artifacts → cache.
 
 ### Caching Rules
