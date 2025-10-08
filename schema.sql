@@ -7,6 +7,7 @@ DO $$
 BEGIN
     IF EXISTS (SELECT 1 FROM pg_catalog.pg_namespace WHERE nspname = 'pg_catalog') THEN
         EXECUTE 'CREATE EXTENSION IF NOT EXISTS vector';
+        EXECUTE 'ALTER DATABASE ' || quote_ident(current_database()) || ' SET vector.hnsw.max_dimensions = 4096';
         EXECUTE 'CREATE EXTENSION IF NOT EXISTS pg_trgm';
     END IF;
 EXCEPTION
@@ -15,6 +16,8 @@ EXCEPTION
     WHEN insufficient_privilege THEN NULL;
 END
 $$;
+
+SET vector.hnsw.max_dimensions = 4096;
 
 CREATE SCHEMA IF NOT EXISTS kb;
 CREATE SCHEMA IF NOT EXISTS pdf_tables;
@@ -96,7 +99,22 @@ CREATE TABLE IF NOT EXISTS kb.tables_metadata (
 );
 
 -- Vector and FTS indexes.
-CREATE INDEX IF NOT EXISTS idx_markdowns_emb ON kb.markdowns USING hnsw (emb vector_cosine_ops);
+DO $$
+BEGIN
+    BEGIN
+        EXECUTE 'CREATE INDEX IF NOT EXISTS idx_markdowns_emb ON kb.markdowns USING hnsw (emb vector_cosine_ops)';
+    EXCEPTION
+        WHEN others THEN
+            BEGIN
+                EXECUTE 'CREATE INDEX IF NOT EXISTS idx_markdowns_emb ON kb.markdowns USING ivfflat (emb vector_cosine_ops)';
+            EXCEPTION
+                WHEN others THEN
+                    NULL;
+            END;
+    END;
+END
+$$;
+
 CREATE INDEX IF NOT EXISTS idx_markdowns_tsv ON kb.markdowns USING gin (tsv);
 
 -- Convenience view for retrieving sections with markdown counts.

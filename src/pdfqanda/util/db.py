@@ -13,7 +13,7 @@ from typing import Iterable, Sequence
 _SQLALCHEMY_AVAILABLE = importlib.util.find_spec("sqlalchemy") is not None
 
 if _SQLALCHEMY_AVAILABLE:  # pragma: no cover - exercised in integration tests
-    from sqlalchemy import create_engine, text
+    from sqlalchemy import create_engine, event, text
     from sqlalchemy.engine import Engine
 else:  # pragma: no cover - fallback path tested under CI
     create_engine = text = Engine = None  # type: ignore[assignment]
@@ -49,7 +49,21 @@ class Database:
         if spec is None:
             return
         module = importlib.import_module("pgvector.sqlalchemy")
-        module.register_vector(self.engine)
+        register = getattr(module, "register_vector", None)
+        if register is not None:
+            register(self.engine)
+            return
+        psycopg_spec = importlib.util.find_spec("pgvector.psycopg.register")
+        if psycopg_spec is None:
+            return
+        psycopg_module = importlib.import_module("pgvector.psycopg.register")
+        register_vector = getattr(psycopg_module, "register_vector", None)
+        if register_vector is None:
+            return
+
+        @event.listens_for(self.engine, "connect")
+        def _register(dbapi_connection, connection_record):  # pragma: no cover - integration only
+            register_vector(dbapi_connection)
 
     # ------------------------------------------------------------------
     def initialize(self, schema_path: Path | None = None) -> None:
@@ -188,13 +202,20 @@ class Database:
         if not items:
             return
         if self.is_postgres and self.engine is not None:
+            payload = [
+                {
+                    **row,
+                    "meta": json.dumps(row.get("meta", {})),
+                }
+                for row in items
+            ]
             with self.engine.begin() as conn:
                 conn.execute(
                     text(
                         "INSERT INTO kb.sections (id, document_id, parent_id, title, level, start_page, end_page, path, meta) "
                         "VALUES (:id, :document_id, :parent_id, :title, :level, :start_page, :end_page, :path, CAST(:meta AS jsonb))"
                     ),
-                    items,
+                    payload,
                 )
             return
         if self.sqlite_conn is None:
@@ -225,13 +246,25 @@ class Database:
         if not items:
             return
         if self.is_postgres and self.engine is not None:
+            try:
+                from pgvector import Vector as PgVector  # type: ignore
+            except Exception:  # pragma: no cover
+                PgVector = None  # type: ignore
+            payload = [
+                {
+                    **row,
+                    "meta": json.dumps(row.get("meta", {})),
+                    "emb": PgVector(list(row.get("emb", []))) if PgVector is not None else row.get("emb"),
+                }
+                for row in items
+            ]
             with self.engine.begin() as conn:
                 conn.execute(
                     text(
                         "INSERT INTO kb.markdowns (id, document_id, section_id, content, token_count, char_start, char_end, start_page, end_page, emb, tsv) "
                         "VALUES (:id, :document_id, :section_id, :content, :token_count, :char_start, :char_end, :start_page, :end_page, :emb, to_tsvector('english', :content))"
                     ),
-                    items,
+                    payload,
                 )
             return
         if self.sqlite_conn is None:
@@ -297,6 +330,12 @@ class Database:
             if clauses:
                 sql += " WHERE " + " AND ".join(clauses)
             sql += " ORDER BY emb <#> :embedding LIMIT :limit"
+            try:
+                from pgvector import Vector as PgVector  # type: ignore
+
+                params["embedding"] = PgVector(list(embedding))
+            except Exception:  # pragma: no cover - optional dependency path
+                params["embedding"] = list(embedding)
             with self.engine.begin() as conn:
                 result = conn.execute(text(sql), params)
                 rows = [dict(row) for row in result.mappings().all()]
