@@ -1,31 +1,33 @@
 # pdfqanda
 
 `pdfqanda` turns local PDFs into a cite-everything knowledge base. The current
-MVP ships a deterministic ingestion pipeline, a Postgres/pgvector friendly
-schema, and a CLI for loading PDFs and retrieving cited snippets.
+MVP ships a SQLite-friendly schema and a CLI for loading PDFs and retrieving
+cited snippets backed by OpenAI embeddings.
 
 ## Highlights
 
-- **Canonical schema** — `schema.sql` provisions `kb.*` tables with
-  pgvector-compatible embedding columns, cosine indexes, and `tsvector`
-  full-text search columns populated during ingestion.
-- **Deterministic ingestion** — PyMuPDF-powered extraction (with a lightweight
+- **Canonical schema** — `schema.sql` provisions `kb_*` tables with SQLite
+  columns for cached embeddings and lightweight token payloads populated during
+  ingestion.
+- **Ingestion pipeline** — PyMuPDF-powered extraction (with a lightweight
   pure-Python fallback) produces paragraph chunks (~1k token windows with ~12 %
-  overlap), stores them in Postgres (or a SQLite fallback), and populates
-  embeddings via the deterministic stand-in in `embedding.py`.
+  overlap), stores them in SQLite, and populates embeddings via
+  `text-embedding-3-small`.
 - **Vector + lexical retrieval** — `Retriever.search` runs cosine similarity via
-  pgvector (or a cosine implementation on SQLite) and can optionally filter on
-  keyword matches using the stored `tsv` payloads.
-- **CLI** — `pdfqanda db init` creates schemas, `pdfqanda ingest` pushes a PDF
-  into the knowledge base, and `pdfqanda ask` prints the top cited snippets.
+  the bundled vector index and can optionally filter on keyword matches using
+  the stored `tsv` payloads.
+- **CLI** — `pdfqanda db init` ensures the SQLite schema exists, `pdfqanda
+  ingest` pushes a PDF into the knowledge base, and `pdfqanda ask` prints the top
+  cited snippets.
 
 ## Getting Started
 
 ### Prerequisites
 
 - Python 3.10+
-- Optional: Postgres 15+ with the [pgvector](https://github.com/pgvector/pgvector)
-  extension enabled.
+- An OpenAI API key with access to `text-embedding-3-small`
+- Optional: [ChromaDB](https://docs.trychroma.com/) if you prefer a managed
+  vector backend instead of the default NumPy store.
 
 ### Installation
 
@@ -35,17 +37,25 @@ pip install -e .[dev]
 
 ### Database
 
-By default the CLI uses `sqlite:///pdfqanda.db`. To target Postgres set
-`DB_DSN` before running commands:
+By default the CLI uses `pdfqanda.db` in the working directory. Override the
+location with `DB_PATH` before running commands:
 
 ```bash
-export DB_DSN="postgresql://user:password@localhost:5432/pdfqanda"
+export DB_PATH="/tmp/pdfqanda.sqlite"
 ```
 
-Run the schema once (for Postgres deployments) using the bundled CLI command:
+Run the schema initialization to create tables if they do not yet exist:
 
 ```bash
 pdfqanda db init
+```
+
+### Environment
+
+Export your OpenAI credential so the embedding client can authenticate:
+
+```bash
+export OPENAI_API_KEY="sk-..."
 ```
 
 ### Ingesting a PDF
@@ -54,8 +64,8 @@ pdfqanda db init
 pdfqanda ingest path/to/document.pdf
 ```
 
-This extracts paragraphs, writes canonical rows in `kb.*`, and stores
-deterministic embeddings alongside the text chunks.
+This extracts paragraphs, writes canonical rows in `kb.*`, and stores OpenAI
+embeddings alongside the text chunks.
 
 ### Asking a Question
 
@@ -72,16 +82,15 @@ form `【doc:… §… p.…】`.
 pytest
 ```
 
-The smoke suite ingests fixture PDFs, verifies rows exist in `kb.markdowns`, and
+The smoke suite ingests fixture PDFs, verifies rows exist in `kb_markdowns`, and
 asserts that `ask` returns cited snippets.
 
 ## Development Notes
 
-- Embeddings use a deterministic SHA256-based projection (stand-in for
-  `text-embedding-3-small`, 1536 dimensions) so unit tests remain offline and
-  reproducible.
-- The SQLite fallback stores vectors as JSON and skips full-text triggers; it is
-  intended for local testing only.
+- The embedding helper writes cache files under `.cache/llm/` to avoid redundant
+  OpenAI requests when ingesting the same content repeatedly.
+- The SQLite storage keeps embeddings as JSON while the dedicated vector index
+  stores normalised vectors on disk (or in Chroma when available).
 
 ## License
 

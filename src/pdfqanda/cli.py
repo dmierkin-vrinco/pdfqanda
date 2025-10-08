@@ -12,7 +12,7 @@ from .ingest import PdfIngestor
 from .retrieval import Retriever, format_answer
 from .util.db import Database
 
-app = typer.Typer(help="PDF Q&A pipeline backed by a database spine.")
+app = typer.Typer(help="PDF Q&A pipeline backed by a SQLite spine.")
 db_app = typer.Typer(help="Database management commands.")
 app.add_typer(db_app, name="db")
 
@@ -22,8 +22,8 @@ def db_init() -> None:
     """Initialise database schemas and extensions."""
 
     settings = get_settings()
-    database = Database(settings.db_dsn)
-    database.initialize(Path("schema.sql"))
+    database = Database(settings.db_path)
+    database.initialize()
     typer.echo("Database initialised")
 
 
@@ -35,8 +35,8 @@ def ingest(
     """Ingest one or more PDFs into the knowledge base."""
 
     settings = get_settings()
-    database = Database(settings.db_dsn)
-    database.initialize(Path("schema.sql"))
+    database = Database(settings.db_path)
+    database.initialize()
 
     ingestor = PdfIngestor(database)
     for pdf_path in pdfs:
@@ -54,7 +54,7 @@ def ask(
     """Query the database for relevant snippets and return a cited answer."""
 
     settings = get_settings()
-    database = Database(settings.db_dsn)
+    database = Database(settings.db_path)
     retriever = Retriever(database)
 
     hits = retriever.search(question, k=k)

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from shutil import copyfile
 
@@ -9,6 +8,7 @@ import pytest
 from pdfqanda.config import get_settings
 from pdfqanda.ingest import PdfIngestor
 from pdfqanda.retrieval import Retriever, format_answer
+from pdfqanda.util.cache import FileCache
 from pdfqanda.util.db import Database
 from pdfqanda.util.embeddings import EmbeddingClient
 
@@ -16,54 +16,33 @@ SAMPLE = Path(__file__).resolve().parents[1] / "input" / "sample.pdf"
 
 
 @pytest.fixture()
+def openai_embedder(tmp_path):
+    settings = get_settings()
+    cache = FileCache(tmp_path / "llm")
+    return EmbeddingClient(
+        settings.embedding_model,
+        settings.embedding_dim,
+        cache=cache,
+    )
+
+
+@pytest.fixture()
 def temp_db(tmp_path, monkeypatch):
     db_path = tmp_path / "kb.sqlite"
-    monkeypatch.setenv("DB_DSN", f"sqlite:///{db_path}")
+    monkeypatch.setenv("DB_PATH", str(db_path))
     get_settings.cache_clear()
     settings = get_settings()
-    database = Database(settings.db_dsn)
+    database = Database(settings.db_path)
     database.initialize()
     return database
 
 
-@pytest.fixture(scope="module")
-def postgres_db():
-    dsn = os.getenv(
-        "POSTGRES_TEST_DSN",
-        "postgresql+psycopg://pdfqanda:pdfqanda@localhost:5432/pdfqanda",
-    )
-    get_settings.cache_clear()
-    try:
-        database = Database(dsn)
-    except Exception as exc:  # pragma: no cover - optional dependency path
-        pytest.skip(f"Postgres unavailable: {exc}")
-    if not database.is_postgres:
-        pytest.skip("Postgres driver not available")
-
-    schema_path = Path(__file__).resolve().parents[1] / "schema.sql"
-    try:
-        # ensure a clean schema for the test run
-        with database.engine.begin() as conn:  # type: ignore[union-attr]
-            conn.exec_driver_sql("DROP SCHEMA IF EXISTS kb CASCADE;")
-            conn.exec_driver_sql("DROP SCHEMA IF EXISTS pdf_tables CASCADE;")
-        database.initialize(schema_path)
-    except Exception as exc:  # pragma: no cover - optional service unavailable
-        pytest.skip(f"Postgres unavailable: {exc}")
-        return
-
-    yield database
-
-    with database.engine.begin() as conn:  # type: ignore[union-attr]
-        conn.exec_driver_sql("DROP SCHEMA IF EXISTS kb CASCADE;")
-        conn.exec_driver_sql("DROP SCHEMA IF EXISTS pdf_tables CASCADE;")
-
-
-def test_ingest_and_ask(temp_db, tmp_path):
+def test_ingest_and_ask(temp_db, tmp_path, openai_embedder):
     database = temp_db
     local_pdf = tmp_path / "sample.pdf"
     copyfile(SAMPLE, local_pdf)
 
-    ingestor = PdfIngestor(database)
+    ingestor = PdfIngestor(database, embedder=openai_embedder)
     result = ingestor.ingest(local_pdf)
     assert result.chunk_count > 0
 
@@ -72,31 +51,15 @@ def test_ingest_and_ask(temp_db, tmp_path):
     cursor.execute("SELECT COUNT(*) FROM kb_markdowns")
     assert cursor.fetchone()[0] > 0
 
-    retriever = Retriever(database)
+    retriever = Retriever(database, embedder=openai_embedder)
     hits = retriever.search("What is the project about?", k=3)
     answer = format_answer(hits)
     assert hits
     assert "【doc:" in answer
+    # ensure index files created
+    index_dir = Path(database.path).with_name(Path(database.path).name + ".index")
+    assert index_dir.exists()
 
-
-def test_ingest_and_ask_postgres(postgres_db, tmp_path):
-    database = postgres_db
-    local_pdf = tmp_path / "sample.pdf"
-    copyfile(SAMPLE, local_pdf)
-
-    ingestor = PdfIngestor(database)
-    result = ingestor.ingest(local_pdf)
-    assert result.chunk_count > 0
-
-    retriever = Retriever(database)
-    hits = retriever.search("What is the project about?", k=3)
-    answer = format_answer(hits)
-    assert hits
-    assert "【doc:" in answer
-
-def test_embedding_dimension():
-    get_settings.cache_clear()
-    settings = get_settings()
-    client = EmbeddingClient(settings.embedding_model, settings.embedding_dim)
-    vector = client.embed_query("hello world")
+def test_embedding_dimension(openai_embedder):
+    vector = openai_embedder.embed_query("hello world")
     assert len(vector) == 1536
