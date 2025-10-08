@@ -7,7 +7,6 @@ DO $$
 BEGIN
     IF EXISTS (SELECT 1 FROM pg_catalog.pg_namespace WHERE nspname = 'pg_catalog') THEN
         EXECUTE 'CREATE EXTENSION IF NOT EXISTS vector';
-        EXECUTE 'ALTER DATABASE ' || quote_ident(current_database()) || ' SET vector.hnsw.max_dimensions = 4096';
         EXECUTE 'CREATE EXTENSION IF NOT EXISTS pg_trgm';
     END IF;
 EXCEPTION
@@ -16,8 +15,6 @@ EXCEPTION
     WHEN insufficient_privilege THEN NULL;
 END
 $$;
-
-SET vector.hnsw.max_dimensions = 4096;
 
 CREATE SCHEMA IF NOT EXISTS kb;
 CREATE SCHEMA IF NOT EXISTS pdf_tables;
@@ -55,7 +52,7 @@ CREATE TABLE IF NOT EXISTS kb.markdowns (
     char_end INTEGER,
     start_page INTEGER,
     end_page INTEGER,
-    emb VECTOR(3072) NOT NULL,
+    emb VECTOR(1536) NOT NULL,
     tsv tsvector NOT NULL
 );
 

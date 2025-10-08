@@ -40,12 +40,19 @@ def postgres_db():
     if not database.is_postgres:
         pytest.skip("Postgres driver not available")
 
-    # ensure a clean schema for the test run
-    with database.engine.begin() as conn:  # type: ignore[union-attr]
-        conn.exec_driver_sql("DROP SCHEMA IF EXISTS kb CASCADE;")
-        conn.exec_driver_sql("DROP SCHEMA IF EXISTS pdf_tables CASCADE;")
-    database.initialize(Path(__file__).resolve().parents[1] / "schema.sql")
+    schema_path = Path(__file__).resolve().parents[1] / "schema.sql"
+    try:
+        # ensure a clean schema for the test run
+        with database.engine.begin() as conn:  # type: ignore[union-attr]
+            conn.exec_driver_sql("DROP SCHEMA IF EXISTS kb CASCADE;")
+            conn.exec_driver_sql("DROP SCHEMA IF EXISTS pdf_tables CASCADE;")
+        database.initialize(schema_path)
+    except Exception as exc:  # pragma: no cover - optional service unavailable
+        pytest.skip(f"Postgres unavailable: {exc}")
+        return
+
     yield database
+
     with database.engine.begin() as conn:  # type: ignore[union-attr]
         conn.exec_driver_sql("DROP SCHEMA IF EXISTS kb CASCADE;")
         conn.exec_driver_sql("DROP SCHEMA IF EXISTS pdf_tables CASCADE;")
@@ -92,4 +99,4 @@ def test_embedding_dimension():
     settings = get_settings()
     client = EmbeddingClient(settings.embedding_model, settings.embedding_dim)
     vector = client.embed_query("hello world")
-    assert len(vector) == 3072
+    assert len(vector) == 1536

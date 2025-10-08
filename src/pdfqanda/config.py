@@ -41,8 +41,8 @@ def get_settings() -> Settings:
     """Return cached configuration values loaded from the environment."""
 
     db_dsn = os.getenv("DB_DSN", "sqlite:///pdfqanda.db")
-    embedding_model = os.getenv("EMBEDDING_MODEL", "text-embedding-3-large")
-    embedding_dim = int(os.getenv("EMBEDDING_DIM", "3072"))
+    embedding_model = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
+    embedding_dim = int(os.getenv("EMBEDDING_DIM", "1536"))
     chunk_target = int(os.getenv("CHUNK_TARGET_TOKENS", "1000"))
     overlap_ratio = float(os.getenv("CHUNK_OVERLAP_RATIO", "0.12"))
 

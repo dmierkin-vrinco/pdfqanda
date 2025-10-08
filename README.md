@@ -7,8 +7,8 @@ schema, and a CLI for loading PDFs and retrieving cited snippets.
 ## Highlights
 
 - **Canonical schema** — `schema.sql` provisions `kb.*` tables with
-  pgvector-compatible embedding columns, HNSW indexes, and `tsvector` full-text
-  search triggers.
+  pgvector-compatible embedding columns, cosine indexes, and `tsvector`
+  full-text search columns populated during ingestion.
 - **Deterministic ingestion** — PyMuPDF-powered extraction (with a lightweight
   pure-Python fallback) produces paragraph chunks (~1k token windows with ~12 %
   overlap), stores them in Postgres (or a SQLite fallback), and populates
@@ -78,7 +78,8 @@ asserts that `ask` returns cited snippets.
 ## Development Notes
 
 - Embeddings use a deterministic SHA256-based projection (stand-in for
-  `text-embedding-3-large`) so unit tests remain offline and reproducible.
+  `text-embedding-3-small`, 1536 dimensions) so unit tests remain offline and
+  reproducible.
 - The SQLite fallback stores vectors as JSON and skips full-text triggers; it is
   intended for local testing only.
 
