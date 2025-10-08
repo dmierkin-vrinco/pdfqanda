@@ -2,15 +2,13 @@
 
 from .config import get_settings
 from .db import Database
-from .expert import Expert, CitationError
-from .ingest import PdfIngestPipeline
-from .researcher import Researcher
+from .ingest import PdfIngestor
+from .retrieval import Retriever, RetrievalHit
 
 __all__ = [
-    "CitationError",
     "Database",
-    "Expert",
-    "PdfIngestPipeline",
-    "Researcher",
+    "PdfIngestor",
+    "Retriever",
+    "RetrievalHit",
     "get_settings",
 ]

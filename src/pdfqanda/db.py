@@ -1,450 +1,360 @@
-"""Persistence layer for pdfqanda."""
+"""Database utilities for pdfqanda."""
 
 from __future__ import annotations
 
+import importlib
+import importlib.util
 import json
 import sqlite3
 from contextlib import contextmanager
-from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import Iterable
 
-from .models import (
-    DocumentRecord,
-    GraphicRecord,
-    MarkdownChunk,
-    NoteRecord,
-    SectionRecord,
-    TableMetadataRecord,
-)
+_SQLALCHEMY_AVAILABLE = importlib.util.find_spec("sqlalchemy") is not None
+
+if _SQLALCHEMY_AVAILABLE:
+    from sqlalchemy import bindparam, create_engine, text
+    from sqlalchemy.engine import Engine
+else:  # pragma: no cover - exercised in CI fallback
+    bindparam = create_engine = text = Engine = None  # type: ignore[assignment]
 
 
-@dataclass(slots=True)
 class Database:
-    """Lightweight database wrapper supporting SQLite and Postgres."""
+    """Lightweight wrapper around a SQLAlchemy engine."""
 
-    url: str
-    _conn: sqlite3.Connection | None = None
-    _backend: str = "sqlite"
-
-    def __post_init__(self) -> None:
-        if self.url.startswith("postgres://") or self.url.startswith("postgresql://"):
-            self._backend = "postgres"
-        elif self.url.startswith("sqlite://"):
-            self._backend = "sqlite"
+    def __init__(self, dsn: str) -> None:
+        self.dsn = dsn
+        self.engine: Engine | None = None
+        self.sqlite_conn: sqlite3.Connection | None = None
+        if _SQLALCHEMY_AVAILABLE:
+            self.engine = create_engine(dsn, future=True)
+            self.dialect = self.engine.dialect.name
+            self.is_postgres = self.dialect.startswith("postgres")
+            if self.is_postgres:
+                self._register_vector()
         else:
-            msg = f"Unsupported database URL: {self.url}"
-            raise ValueError(msg)
+            self.dialect = "sqlite"
+            self.is_postgres = False
+            if not dsn.startswith("sqlite:///"):
+                msg = "SQLAlchemy is required for non-SQLite connections"
+                raise ModuleNotFoundError(msg)
+            path = dsn.split("sqlite:///")[1]
+            self.sqlite_conn = sqlite3.connect(path)
+            self.sqlite_conn.row_factory = sqlite3.Row
 
-    # -- Connection management -------------------------------------------------
-    def connect(self):  # type: ignore[override]
-        if self._conn is not None:
-            return self._conn
-        if self._backend == "sqlite":
-            db_path = self.url.split("sqlite://", 1)[1]
-            if db_path.startswith("/"):
-                path = Path(db_path)
-            elif db_path == ":memory:":
-                path = Path(db_path)
-            else:
-                path = Path.cwd() / db_path
-            if str(path) != ":memory":
-                path.parent.mkdir(parents=True, exist_ok=True)
-            conn = sqlite3.connect(str(path))
-            conn.execute("PRAGMA foreign_keys = ON")
-            conn.row_factory = sqlite3.Row
-            self._conn = conn
-            return conn
-        import importlib
+    def _register_vector(self) -> None:
+        spec = importlib.util.find_spec("pgvector.sqlalchemy")
+        if spec is None:
+            return
+        module = importlib.import_module("pgvector.sqlalchemy")
+        module.register_vector(self.engine)
 
-        psycopg = importlib.import_module("psycopg")
-        self._conn = psycopg.connect(self.url, autocommit=False)
-        return self._conn
+    def initialize(self, schema_path: Path | None = None) -> None:
+        """Initialise database schemas and tables."""
 
-    def close(self) -> None:
-        if self._conn is not None:
-            self._conn.close()
-            self._conn = None
-
-    # -- Schema management -----------------------------------------------------
-    def initialize(self) -> None:
-        if self._backend == "sqlite":
+        if self.is_postgres:
+            if schema_path is None:
+                schema_path = Path(__file__).resolve().parents[1] / "db" / "schema.sql"
+            schema_sql = schema_path.read_text()
+            if not self.engine:
+                raise RuntimeError("Engine not available")
+            with self.engine.begin() as conn:
+                conn.execute(text(schema_sql))
+        else:
             self._initialize_sqlite()
-        else:
-            self._initialize_postgres()
 
     def _initialize_sqlite(self) -> None:
-        conn = self.connect()
-        conn.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS kb_documents (
-                id TEXT PRIMARY KEY,
-                title TEXT NOT NULL,
-                sha256 TEXT NOT NULL UNIQUE,
-                meta TEXT,
-                created_at TEXT NOT NULL
-            );
+        """Create a minimal SQLite schema for development and tests."""
 
-            CREATE TABLE IF NOT EXISTS kb_sections (
-                id TEXT PRIMARY KEY,
-                document_id TEXT NOT NULL,
-                parent_id TEXT,
-                title TEXT NOT NULL,
-                level INTEGER NOT NULL,
-                start_page INTEGER NOT NULL,
-                end_page INTEGER NOT NULL,
-                path TEXT,
-                meta TEXT,
-                FOREIGN KEY(document_id) REFERENCES kb_documents(id) ON DELETE CASCADE,
-                FOREIGN KEY(parent_id) REFERENCES kb_sections(id) ON DELETE CASCADE
-            );
+        ddl = """
+        CREATE TABLE IF NOT EXISTS kb_documents (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            sha256 TEXT NOT NULL UNIQUE,
+            created_at TEXT NOT NULL
+        );
 
-            CREATE TABLE IF NOT EXISTS kb_markdowns (
-                id TEXT PRIMARY KEY,
-                document_id TEXT NOT NULL,
-                section_id TEXT,
-                content TEXT NOT NULL,
-                token_count INTEGER NOT NULL,
-                char_start INTEGER,
-                char_end INTEGER,
-                start_page INTEGER,
-                end_page INTEGER,
-                start_line INTEGER,
-                end_line INTEGER,
-                emb TEXT NOT NULL,
-                tsv TEXT NOT NULL,
-                FOREIGN KEY(document_id) REFERENCES kb_documents(id) ON DELETE CASCADE,
-                FOREIGN KEY(section_id) REFERENCES kb_sections(id) ON DELETE SET NULL
-            );
+        CREATE TABLE IF NOT EXISTS kb_sections (
+            id TEXT PRIMARY KEY,
+            document_id TEXT NOT NULL REFERENCES kb_documents(id) ON DELETE CASCADE,
+            title TEXT NOT NULL,
+            level INTEGER NOT NULL,
+            start_page INTEGER,
+            end_page INTEGER
+        );
 
-            CREATE TABLE IF NOT EXISTS kb_notes (
-                id TEXT PRIMARY KEY,
-                document_id TEXT NOT NULL,
-                section_id TEXT,
-                kind TEXT NOT NULL,
-                ref_anchor TEXT,
-                content TEXT NOT NULL,
-                page INTEGER,
-                bbox TEXT,
-                FOREIGN KEY(document_id) REFERENCES kb_documents(id) ON DELETE CASCADE,
-                FOREIGN KEY(section_id) REFERENCES kb_sections(id) ON DELETE SET NULL
-            );
+        CREATE TABLE IF NOT EXISTS kb_markdowns (
+            id TEXT PRIMARY KEY,
+            document_id TEXT NOT NULL REFERENCES kb_documents(id) ON DELETE CASCADE,
+            section_id TEXT REFERENCES kb_sections(id) ON DELETE SET NULL,
+            content TEXT NOT NULL,
+            token_count INTEGER NOT NULL,
+            start_page INTEGER,
+            end_page INTEGER,
+            emb TEXT,
+            tsv TEXT
+        );
 
-            CREATE TABLE IF NOT EXISTS kb_graphics (
-                id TEXT PRIMARY KEY,
-                document_id TEXT NOT NULL,
-                section_id TEXT,
-                caption TEXT,
-                nearby_text TEXT,
-                path TEXT NOT NULL,
-                sha256 TEXT NOT NULL,
-                page INTEGER,
-                bbox TEXT,
-                FOREIGN KEY(document_id) REFERENCES kb_documents(id) ON DELETE CASCADE,
-                FOREIGN KEY(section_id) REFERENCES kb_sections(id) ON DELETE SET NULL
-            );
+        CREATE INDEX IF NOT EXISTS idx_sqlite_markdowns_doc
+            ON kb_markdowns(document_id);
+        """
+        if self.engine is not None:
+            with self.engine.begin() as conn:
+                for statement in ddl.split(";\n\n"):
+                    stmt = statement.strip()
+                    if stmt:
+                        conn.execute(text(stmt))
+        elif self.sqlite_conn is not None:
+            self.sqlite_conn.executescript(ddl)
+            self.sqlite_conn.commit()
 
-            CREATE TABLE IF NOT EXISTS kb_tables_metadata (
-                id TEXT PRIMARY KEY,
-                document_id TEXT NOT NULL,
-                section_id TEXT,
-                table_name TEXT NOT NULL,
-                caption TEXT,
-                columns_json TEXT,
-                units_json TEXT,
-                FOREIGN KEY(document_id) REFERENCES kb_documents(id) ON DELETE CASCADE,
-                FOREIGN KEY(section_id) REFERENCES kb_sections(id) ON DELETE SET NULL
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_markdowns_document ON kb_markdowns(document_id);
-            CREATE INDEX IF NOT EXISTS idx_markdowns_section ON kb_markdowns(section_id);
-            CREATE INDEX IF NOT EXISTS idx_markdowns_tsv ON kb_markdowns(tsv);
-            """
-        )
-        conn.commit()
-
-    def _initialize_postgres(self) -> None:
-        schema_path = Path(__file__).resolve().parent.parent / "schema.sql"
-        if not schema_path.exists():
-            msg = "schema.sql not found; cannot initialize Postgres schema"
-            raise FileNotFoundError(msg)
-        conn = self.connect()
-        sql = schema_path.read_text()
-        statements = [stmt.strip() for stmt in sql.split(";") if stmt.strip()]
-        cur = conn.cursor()
-        try:
-            for stmt in statements:
-                cur.execute(stmt)
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            cur.close()
-
-    # -- Persistence helpers ---------------------------------------------------
     @contextmanager
-    def transaction(self):
-        conn = self.connect()
-        try:
+    def connect(self):
+        if self.engine is None:
+            raise RuntimeError("SQLAlchemy engine is not available in SQLite fallback mode")
+        with self.engine.begin() as conn:
             yield conn
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
 
-    def insert_document_bundle(
-        self,
-        document: DocumentRecord,
-        sections: Iterable[SectionRecord],
-        markdowns: Iterable[MarkdownChunk],
-        notes: Iterable[NoteRecord],
-        graphics: Iterable[GraphicRecord],
-        tables: Iterable[TableMetadataRecord],
-    ) -> None:
-        with self.transaction() as conn:
-            self._insert_document(conn, document)
-            self._insert_sections(conn, sections)
-            self._insert_markdowns(conn, markdowns)
-            self._insert_notes(conn, notes)
-            self._insert_graphics(conn, graphics)
-            self._insert_tables(conn, tables)
+    # -- Ingestion helpers -------------------------------------------------
+    def delete_document(self, sha256: str) -> None:
+        """Delete an existing document by hash."""
 
-    # -- Low level insert helpers ---------------------------------------------
-    def _insert_document(self, conn, document: DocumentRecord) -> None:
-        if self._backend == "sqlite":
-            conn.execute(
-                "INSERT OR REPLACE INTO kb_documents (id, title, sha256, meta, created_at)"
-                " VALUES (?, ?, ?, ?, ?)",
-                (
-                    document.id,
-                    document.title,
-                    document.sha256,
-                    json.dumps(document.meta),
-                    document.created_at.isoformat(),
-                ),
+        if self.engine is not None:
+            with self.engine.begin() as conn:
+                if self.is_postgres:
+                    conn.execute(text("DELETE FROM kb.markdowns WHERE document_id IN (SELECT id FROM kb.documents WHERE sha256 = :sha)"), {"sha": sha256})
+                    conn.execute(text("DELETE FROM kb.sections WHERE document_id IN (SELECT id FROM kb.documents WHERE sha256 = :sha)"), {"sha": sha256})
+                    conn.execute(text("DELETE FROM kb.documents WHERE sha256 = :sha"), {"sha": sha256})
+                else:
+                    conn.execute(text("DELETE FROM kb_markdowns WHERE document_id IN (SELECT id FROM kb_documents WHERE sha256 = :sha)"), {"sha": sha256})
+                    conn.execute(text("DELETE FROM kb_sections WHERE document_id IN (SELECT id FROM kb_documents WHERE sha256 = :sha)"), {"sha": sha256})
+                    conn.execute(text("DELETE FROM kb_documents WHERE sha256 = :sha"), {"sha": sha256})
+        elif self.sqlite_conn is not None:
+            cursor = self.sqlite_conn.cursor()
+            cursor.execute(
+                "DELETE FROM kb_markdowns WHERE document_id IN (SELECT id FROM kb_documents WHERE sha256 = ?)",
+                (sha256,),
             )
-        else:
-            cur = conn.cursor()
-            cur.execute(
-                "INSERT INTO kb.documents (id, title, sha256, meta, created_at)"
-                " VALUES (%s, %s, %s, %s::jsonb, %s)"
-                " ON CONFLICT (sha256) DO UPDATE SET title = EXCLUDED.title",
-                (
-                    document.id,
-                    document.title,
-                    document.sha256,
-                    json.dumps(document.meta),
-                    document.created_at,
-                ),
+            cursor.execute(
+                "DELETE FROM kb_sections WHERE document_id IN (SELECT id FROM kb_documents WHERE sha256 = ?)",
+                (sha256,),
             )
-            cur.close()
+            cursor.execute("DELETE FROM kb_documents WHERE sha256 = ?", (sha256,))
+            self.sqlite_conn.commit()
 
-    def _insert_sections(self, conn, sections: Iterable[SectionRecord]) -> None:
-        for section in sections:
-            payload = (
-                section.id,
-                section.document_id,
-                section.parent_id,
-                section.title,
-                section.level,
-                section.start_page,
-                section.end_page,
-                section.path,
-                json.dumps(section.meta),
+    def insert_document(self, *, doc_id: str, title: str, sha256: str, created_at: str) -> None:
+        """Insert a new document row."""
+
+        if self.engine is not None:
+            with self.engine.begin() as conn:
+                if self.is_postgres:
+                    conn.execute(
+                        text(
+                            "INSERT INTO kb.documents (id, title, sha256, created_at) "
+                            "VALUES (:id, :title, :sha, :created)"
+                        ),
+                        {"id": doc_id, "title": title, "sha": sha256, "created": created_at},
+                    )
+                else:
+                    conn.execute(
+                        text(
+                            "INSERT INTO kb_documents (id, title, sha256, created_at) "
+                            "VALUES (:id, :title, :sha, :created)"
+                        ),
+                        {"id": doc_id, "title": title, "sha": sha256, "created": created_at},
+                    )
+        elif self.sqlite_conn is not None:
+            cursor = self.sqlite_conn.cursor()
+            cursor.execute(
+                "INSERT INTO kb_documents (id, title, sha256, created_at) VALUES (?, ?, ?, ?)",
+                (doc_id, title, sha256, created_at),
             )
-            if self._backend == "sqlite":
-                conn.execute(
-                    "INSERT OR REPLACE INTO kb_sections "
-                    "(id, document_id, parent_id, title, level, start_page, end_page, path, meta)"
-                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    payload,
-                )
+            self.sqlite_conn.commit()
+
+    def insert_sections(self, rows: Iterable[dict[str, object]]) -> None:
+        rows_list = list(rows)
+        if not rows_list:
+            return
+        if self.engine is not None:
+            with self.engine.begin() as conn:
+                if self.is_postgres:
+                    conn.execute(
+                        text(
+                            "INSERT INTO kb.sections (id, document_id, parent_id, title, level, start_page, end_page, path) "
+                            "VALUES (:id, :document_id, :parent_id, :title, :level, :start_page, :end_page, :path)"
+                        ),
+                        rows_list,
+                    )
+                else:
+                    sqlite_rows = []
+                    for row in rows_list:
+                        sqlite_rows.append(
+                            {
+                                "id": row["id"],
+                                "document_id": row["document_id"],
+                                "title": row.get("title"),
+                                "level": row.get("level", 0),
+                                "start_page": row.get("start_page"),
+                                "end_page": row.get("end_page"),
+                            }
+                        )
+                    conn.execute(
+                        text(
+                            "INSERT INTO kb_sections (id, document_id, title, level, start_page, end_page) "
+                            "VALUES (:id, :document_id, :title, :level, :start_page, :end_page)"
+                        ),
+                        sqlite_rows,
+                    )
+        elif self.sqlite_conn is not None:
+            cursor = self.sqlite_conn.cursor()
+            cursor.executemany(
+                "INSERT INTO kb_sections (id, document_id, title, level, start_page, end_page) VALUES (?, ?, ?, ?, ?, ?)",
+                [
+                    (
+                        row["id"],
+                        row["document_id"],
+                        row.get("title"),
+                        row.get("level", 0),
+                        row.get("start_page"),
+                        row.get("end_page"),
+                    )
+                    for row in rows_list
+                ],
+            )
+            self.sqlite_conn.commit()
+
+    def insert_markdowns(self, rows: Iterable[dict[str, object]]) -> None:
+        prepared = []
+        for row in rows:
+            if self.is_postgres:
+                prepared.append(row)
             else:
-                cur = conn.cursor()
-                cur.execute(
-                    "INSERT INTO kb.sections "
-                    "(id, document_id, parent_id, title, level, start_page, end_page, path, meta)"
-                    " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)"
-                    " ON CONFLICT (id) DO NOTHING",
-                    payload,
-                )
-                cur.close()
-
-    def _insert_markdowns(self, conn, markdowns: Iterable[MarkdownChunk]) -> None:
-        for chunk in markdowns:
-            emb_json = json.dumps(list(chunk.embedding))
-            payload = (
-                chunk.id,
-                chunk.document_id,
-                chunk.section_id,
-                chunk.content,
-                chunk.token_count,
-                chunk.char_start,
-                chunk.char_end,
-                chunk.start_page,
-                chunk.end_page,
-                chunk.start_line,
-                chunk.end_line,
-                emb_json,
-                chunk.tsv,
+                sqlite_row = row.copy()
+                emb = sqlite_row.get("emb")
+                if emb is not None:
+                    sqlite_row["emb"] = json.dumps(emb)
+                sqlite_row["tsv"] = sqlite_row.get("tsv") or ""
+                prepared.append(sqlite_row)
+        if not prepared:
+            return
+        if self.engine is not None:
+            with self.engine.begin() as conn:
+                if self.is_postgres:
+                    conn.execute(
+                        text(
+                            "INSERT INTO kb.markdowns (id, document_id, section_id, content, token_count, start_page, end_page, emb) "
+                            "VALUES (:id, :document_id, :section_id, :content, :token_count, :start_page, :end_page, :emb)"
+                        ),
+                        prepared,
+                    )
+                else:
+                    conn.execute(
+                        text(
+                            "INSERT INTO kb_markdowns (id, document_id, section_id, content, token_count, start_page, end_page, emb, tsv) "
+                            "VALUES (:id, :document_id, :section_id, :content, :token_count, :start_page, :end_page, :emb, :tsv)"
+                        ),
+                        prepared,
+                    )
+        elif self.sqlite_conn is not None:
+            cursor = self.sqlite_conn.cursor()
+            cursor.executemany(
+                "INSERT INTO kb_markdowns (id, document_id, section_id, content, token_count, start_page, end_page, emb, tsv) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (
+                        row["id"],
+                        row["document_id"],
+                        row.get("section_id"),
+                        row.get("content"),
+                        row.get("token_count"),
+                        row.get("start_page"),
+                        row.get("end_page"),
+                        row.get("emb"),
+                        row.get("tsv", ""),
+                    )
+                    for row in prepared
+                ],
             )
-            if self._backend == "sqlite":
-                conn.execute(
-                    "INSERT OR REPLACE INTO kb_markdowns "
-                    "(id, document_id, section_id, content, token_count, char_start, char_end, "
-                    " start_page, end_page, start_line, end_line, emb, tsv)"
-                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    payload,
-                )
-            else:
-                cur = conn.cursor()
-                cur.execute(
-                    "INSERT INTO kb.markdowns "
-                    "(id, document_id, section_id, content, token_count, char_start, char_end,"
-                    " start_page, end_page, start_line, end_line, emb, tsv)"
-                    " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, to_tsvector(%s))",
-                    payload[:-1] + (chunk.tsv,),
-                )
-                cur.close()
+            self.sqlite_conn.commit()
 
-    def _insert_notes(self, conn, notes: Iterable[NoteRecord]) -> None:
-        for note in notes:
-            payload = (
-                note.id,
-                note.document_id,
-                note.section_id,
-                note.kind,
-                note.ref_anchor,
-                note.content,
-                note.page,
-                json.dumps(note.bbox) if note.bbox else None,
+    # -- Retrieval helpers -------------------------------------------------
+    def fetch_all_markdowns(self) -> list[dict[str, object]]:
+        if self.engine is not None:
+            query = text(
+                "SELECT id, document_id, section_id, content, token_count, start_page, end_page, emb, tsv "
+                + ("FROM kb.markdowns" if self.is_postgres else "FROM kb_markdowns")
             )
-            if self._backend == "sqlite":
-                conn.execute(
-                    "INSERT OR REPLACE INTO kb_notes "
-                    "(id, document_id, section_id, kind, ref_anchor, content, page, bbox)"
-                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    payload,
-                )
-            else:
-                cur = conn.cursor()
-                cur.execute(
-                    "INSERT INTO kb.notes "
-                    "(id, document_id, section_id, kind, ref_anchor, content, page, bbox)"
-                    " VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb)",
-                    payload,
-                )
-                cur.close()
-
-    def _insert_graphics(self, conn, graphics: Iterable[GraphicRecord]) -> None:
-        for graphic in graphics:
-            payload = (
-                graphic.id,
-                graphic.document_id,
-                graphic.section_id,
-                graphic.caption,
-                graphic.nearby_text,
-                graphic.path,
-                graphic.sha256,
-                graphic.page,
-                json.dumps(graphic.bbox) if graphic.bbox else None,
+            with self.engine.connect() as conn:
+                rows = conn.execute(query).mappings().all()
+            result = []
+            for row in rows:
+                mapping = dict(row)
+                if not self.is_postgres and isinstance(mapping.get("emb"), str):
+                    mapping["emb"] = json.loads(mapping["emb"])
+                result.append(mapping)
+            return result
+        if self.sqlite_conn is not None:
+            cursor = self.sqlite_conn.cursor()
+            cursor.execute(
+                "SELECT id, document_id, section_id, content, token_count, start_page, end_page, emb, tsv FROM kb_markdowns"
             )
-            if self._backend == "sqlite":
-                conn.execute(
-                    "INSERT OR REPLACE INTO kb_graphics "
-                    "(id, document_id, section_id, caption, nearby_text, path, sha256, page, bbox)"
-                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    payload,
-                )
-            else:
-                cur = conn.cursor()
-                cur.execute(
-                    "INSERT INTO kb.graphics "
-                    "(id, document_id, section_id, caption, nearby_text, path, sha256, page, bbox)"
-                    " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)"
-                    " ON CONFLICT (id) DO NOTHING",
-                    payload,
-                )
-                cur.close()
+            rows = cursor.fetchall()
+            result = []
+            for row in rows:
+                mapping = dict(row)
+                emb = mapping.get("emb")
+                if isinstance(emb, str):
+                    mapping["emb"] = json.loads(emb)
+                result.append(mapping)
+            return result
+        return []
 
-    def _insert_tables(self, conn, tables: Iterable[TableMetadataRecord]) -> None:
-        for table in tables:
-            payload = (
-                table.id,
-                table.document_id,
-                table.section_id,
-                table.table_name,
-                table.caption,
-                json.dumps(table.columns_json) if table.columns_json is not None else None,
-                json.dumps(table.units_json) if table.units_json is not None else None,
+    def vector_search(self, query_vector: list[float], limit: int) -> list[dict[str, object]]:
+        if self.is_postgres:
+            sql = text(
+                "SELECT id, document_id, section_id, content, start_page, end_page, "
+                "emb <=> :query AS distance "
+                "FROM kb.markdowns WHERE emb IS NOT NULL ORDER BY emb <=> :query LIMIT :limit"
             )
-            if self._backend == "sqlite":
-                conn.execute(
-                    "INSERT OR REPLACE INTO kb_tables_metadata "
-                    "(id, document_id, section_id, table_name, caption, columns_json, units_json)"
-                    " VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    payload,
-                )
-            else:
-                cur = conn.cursor()
-                cur.execute(
-                    "INSERT INTO kb.tables_metadata "
-                    "(id, document_id, section_id, table_name, caption, columns_json, units_json)"
-                    " VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s::jsonb)",
-                    payload,
-                )
-                cur.close()
+            with self.engine.connect() as conn:
+                rows = conn.execute(sql, {"query": query_vector, "limit": limit}).mappings().all()
+            return [dict(row) for row in rows]
 
-    # -- Query helpers ---------------------------------------------------------
-    def fetch_markdowns(self, document_id: str | None = None) -> list[dict[str, object]]:
-        conn = self.connect()
-        if self._backend == "sqlite":
-            if document_id is None:
-                cur = conn.execute(
-                    "SELECT id, document_id, section_id, content, token_count, char_start, "
-                    "char_end, start_page, end_page, start_line, end_line, emb, tsv FROM kb_markdowns"
-                )
-            else:
-                cur = conn.execute(
-                    "SELECT id, document_id, section_id, content, token_count, char_start, "
-                    "char_end, start_page, end_page, start_line, end_line, emb, tsv FROM kb_markdowns "
-                    "WHERE document_id = ?",
-                    (document_id,),
-                )
-            rows = [dict(row) for row in cur.fetchall()]
-            cur.close()
-            return rows
-        query = (
-            "SELECT id, document_id, section_id, content, token_count, char_start, char_end,"
-            " start_page, end_page, start_line, end_line, emb, tsv"
-            " FROM kb.markdowns"
+        # SQLite fallback: brute-force cosine similarity
+        rows = self.fetch_all_markdowns()
+        scored: list[tuple[float, dict[str, object]]] = []
+        for row in rows:
+            embedding = row.get("emb") or []
+            if not embedding:
+                continue
+            score = cosine_similarity(query_vector, embedding)
+            scored.append((score, row))
+        scored.sort(key=lambda item: item[0], reverse=True)
+        return [dict(row) | {"distance": 1 - score} for score, row in scored[:limit]]
+
+    def fts_refine(self, query: str, candidate_ids: list[str]) -> dict[str, float]:
+        if not candidate_ids or not self.is_postgres:
+            return {}
+        sql = (
+            text(
+                "SELECT id, ts_rank(tsv, plainto_tsquery('english', :query)) AS rank "
+                "FROM kb.markdowns WHERE id = ANY(:ids)"
+            )
+            .bindparams(bindparam("ids", expanding=True))
         )
-        params: tuple[object, ...] = tuple()
-        if document_id is not None:
-            query += " WHERE document_id = %s"
-            params = (document_id,)
-        cur = self.connect().cursor()
-        cur.execute(query, params)
-        rows = [dict(zip([desc[0] for desc in cur.description], row)) for row in cur.fetchall()]
-        cur.close()
-        return rows
+        with self.engine.connect() as conn:
+            rows = conn.execute(sql, {"query": query, "ids": candidate_ids}).mappings().all()
+        return {row["id"]: float(row["rank"]) for row in rows}
 
-    def list_documents(self) -> list[dict[str, object]]:
-        conn = self.connect()
-        if self._backend == "sqlite":
-            cur = conn.execute(
-                "SELECT id, title, sha256, meta, created_at FROM kb_documents ORDER BY created_at DESC"
-            )
-            rows = [dict(row) for row in cur.fetchall()]
-            cur.close()
-            return rows
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT id, title, sha256, meta::text AS meta, created_at FROM kb.documents"
-            " ORDER BY created_at DESC"
-        )
-        rows = [dict(zip([desc[0] for desc in cur.description], row)) for row in cur.fetchall()]
-        cur.close()
-        return rows
+
+def cosine_similarity(a: list[float], b: list[float]) -> float:
+    dot = 0.0
+    norm_a = 0.0
+    norm_b = 0.0
+    for x, y in zip(a, b):
+        dot += x * y
+        norm_a += x * x
+        norm_b += y * y
+    if norm_a == 0.0 or norm_b == 0.0:
+        return 0.0
+    return dot / (norm_a ** 0.5 * norm_b ** 0.5)

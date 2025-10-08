@@ -2,83 +2,76 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
-from typing import Optional
 
 import typer
 from rich.console import Console
+from rich.table import Table
 
 from .config import get_settings
 from .db import Database
-from .expert import CitationError, Expert
-from .ingest import PdfIngestPipeline
-from .researcher import Researcher
+from .ingest import PdfIngestor
+from .retrieval import Retriever
 
-app = typer.Typer(help="Hybrid retrieval Q&A over PDFs with hard citations.")
+app = typer.Typer(help="PDF Q&A pipeline backed by Postgres/pgvector.")
+db_app = typer.Typer(help="Database management commands.")
+app.add_typer(db_app, name="db")
+
 console = Console()
 
 
-def _load_database() -> Database:
+@db_app.command("init")
+def db_init() -> None:
+    """Initialise database schemas and extensions."""
+
     settings = get_settings()
-    database = Database(settings.database_url)
+    database = Database(settings.db_dsn)
     database.initialize()
-    return database
+    console.print("[bold green]Database initialised[/bold green]")
 
 
 @app.command()
 def ingest(
-    pdf_path: Path = typer.Argument(..., help="Path to a PDF file to ingest."),
-    title: Optional[str] = typer.Option(None, help="Optional title override for the document."),
+    pdf_path: Path = typer.Argument(..., exists=True, file_okay=True, readable=True),
+    title: str | None = typer.Option(None, help="Optional title override."),
 ) -> None:
     """Ingest a PDF into the knowledge base."""
 
-    database = _load_database()
-    pipeline = PdfIngestPipeline(database)
-    artifacts = pipeline.ingest(pdf_path, title=title)
+    settings = get_settings()
+    database = Database(settings.db_dsn)
+    database.initialize()
+
+    ingestor = PdfIngestor(database)
+    result = ingestor.ingest(pdf_path, title=title)
     console.print(
-        f"[bold green]Ingested[/bold green] {pdf_path.name}"
-        f" [dim](sha={artifacts.doc_hash[:12]})[/dim]"
+        f"[bold green]Ingested[/bold green] {pdf_path.name} -> doc {result.document_id[:8]}"
     )
-    console.print(f"Artifacts cached at [italic]{artifacts.artifact_path}[/italic]")
+    console.print(f"Chunks stored: {result.chunk_count}")
 
 
 @app.command()
 def ask(
-    question: str = typer.Argument(..., help="Question to ask about the ingested documents."),
-    top_k: int = typer.Option(6, help="Maximum number of evidence snippets to surface."),
-    json_output: Optional[Path] = typer.Option(None, "--json", help="Write evidence payload to JSON."),
+    question: str = typer.Argument(..., help="Question to ask about the knowledge base."),
+    k: int = typer.Option(6, help="Number of snippets to return."),
 ) -> None:
-    """Ask a question using the Researcher→Expert pipeline."""
+    """Query the database for relevant snippets."""
 
-    database = _load_database()
-    researcher = Researcher(database)
-    expert = Expert()
+    settings = get_settings()
+    database = Database(settings.db_dsn)
+    retriever = Retriever(database)
 
-    output = researcher.search(question, top_k=top_k)
-    if not output.hits:
-        console.print("[yellow]No evidence found for the question.[/yellow]")
+    hits = retriever.search(question, k=k)
+    if not hits:
+        console.print("[yellow]No matches found.[/yellow]")
         raise typer.Exit(code=1)
 
-    try:
-        answer = expert.compose_answer(question, output.hits)
-    except CitationError as exc:
-        console.print(f"[bold red]CITATION_CHECK_FAILED[/bold red]: {exc}")
-        raise typer.Exit(code=1) from exc
-
-    console.print(answer)
-    if output.sql:
-        console.print(f"\n[dim]Suggested SQL:[/dim] {output.sql}")
-
-    if json_output:
-        payload = {
-            "question": question,
-            "answer": answer,
-            "hits": [hit.__dict__ for hit in output.hits],
-            "sql": output.sql,
-        }
-        json_output.write_text(json.dumps(payload, indent=2))
-        console.print(f"Evidence exported to [italic]{json_output}[/italic]")
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("Score")
+    table.add_column("Snippet")
+    table.add_column("Citation")
+    for hit in hits:
+        table.add_row(f"{hit.score:.3f}", hit.content.strip()[:200], hit.citation)
+    console.print(table)
 
 
 if __name__ == "__main__":  # pragma: no cover
