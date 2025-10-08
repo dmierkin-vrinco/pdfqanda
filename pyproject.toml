@@ -1,0 +1,32 @@
+[project]
+name = "pdfqanda"
+version = "0.1.0"
+description = "Simple question answering assistant for local PDF documents"
+authors = [{name = "Your Name"}]
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "typer>=0.9.0",
+  "rich>=13.0.0"
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=7.4",
+  "ruff>=0.4.0"
+]
+
+[project.scripts]
+pdfqanda = "pdfqanda.cli:app"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+
