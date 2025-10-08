@@ -1,11 +1,11 @@
-"""Persistence-agnostic vector index with Chroma and NumPy fallbacks."""
+"""Persistence-agnostic vector index with pluggable backends."""
 
 from __future__ import annotations
 
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Iterable, Protocol, Sequence
 
 import numpy as np
 
@@ -24,21 +24,40 @@ class VectorItem:
     metadata: dict[str, object]
 
 
-class VectorIndex:
-    """Simple vector store that prefers Chroma but falls back to NumPy arrays."""
+class VectorIndexBackend(Protocol):
+    """Runtime interface a vector backend must implement."""
 
-    def __init__(self, base_path: Path, name: str = "kb") -> None:
+    def upsert(self, items: list[VectorItem]) -> None: ...
+
+    def delete(self, ids: list[str]) -> None: ...
+
+    def search(self, embedding: Sequence[float], limit: int | None) -> list[tuple[str, float]]: ...
+
+    def count(self) -> int: ...
+
+    def get_embeddings(self, ids: Iterable[str]) -> dict[str, list[float]]: ...
+
+    def close(self) -> None: ...
+
+
+class VectorIndex:
+    """Front-end facade delegating to the configured backend implementation."""
+
+    def __init__(
+        self,
+        base_path: Path,
+        name: str = "kb",
+        *,
+        backend: VectorIndexBackend | None = None,
+        preferred: str | None = None,
+    ) -> None:
         self.name = name
         self.base_path = Path(base_path)
         self.base_path.mkdir(parents=True, exist_ok=True)
-        self._backend: _BaseBackend
-        if chromadb is not None:
-            try:  # pragma: no cover - optional dependency
-                self._backend = _ChromaBackend(self.base_path, name)
-            except Exception:
-                self._backend = _NumpyBackend(self.base_path, name)
+        if backend is not None:
+            self._backend = backend
         else:
-            self._backend = _NumpyBackend(self.base_path, name)
+            self._backend = _select_backend(self.base_path, name, preferred)
 
     # ------------------------------------------------------------------
     def upsert(self, items: Iterable[VectorItem]) -> None:
@@ -48,10 +67,10 @@ class VectorIndex:
         self._backend.upsert(payload)
 
     def delete(self, ids: Iterable[str]) -> None:
-        ids = [item for item in ids]
-        if not ids:
+        payload = [item for item in ids]
+        if not payload:
             return
-        self._backend.delete(ids)
+        self._backend.delete(payload)
 
     def search(self, embedding: Sequence[float], limit: int | None = None) -> list[tuple[str, float]]:
         return self._backend.search(embedding, limit)
@@ -62,25 +81,26 @@ class VectorIndex:
     def get_embeddings(self, ids: Iterable[str]) -> dict[str, list[float]]:
         return self._backend.get_embeddings(ids)
 
-
-class _BaseBackend:
-    def upsert(self, items: list[VectorItem]) -> None:  # pragma: no cover - interface
-        raise NotImplementedError
-
-    def delete(self, ids: list[str]) -> None:  # pragma: no cover - interface
-        raise NotImplementedError
-
-    def search(self, embedding: Sequence[float], limit: int | None) -> list[tuple[str, float]]:  # pragma: no cover - interface
-        raise NotImplementedError
-
-    def count(self) -> int:  # pragma: no cover - interface
-        raise NotImplementedError
-
-    def get_embeddings(self, ids: Iterable[str]) -> dict[str, list[float]]:  # pragma: no cover - interface
-        raise NotImplementedError
+    def close(self) -> None:
+        self._backend.close()
 
 
-class _NumpyBackend(_BaseBackend):
+def _select_backend(base_path: Path, name: str, preferred: str | None) -> VectorIndexBackend:
+    if preferred == "numpy":
+        return _NumpyBackend(base_path, name)
+    if preferred == "chroma":
+        if chromadb is None:
+            raise RuntimeError("Chroma backend requested but chromadb is not installed")
+        return _ChromaBackend(base_path, name)
+    if chromadb is not None:
+        try:  # pragma: no cover - optional dependency
+            return _ChromaBackend(base_path, name)
+        except Exception:
+            return _NumpyBackend(base_path, name)
+    return _NumpyBackend(base_path, name)
+
+
+class _NumpyBackend(VectorIndexBackend):
     """Persist vectors to disk as normalised NumPy arrays."""
 
     def __init__(self, base_path: Path, name: str) -> None:
@@ -201,8 +221,12 @@ class _NumpyBackend(_BaseBackend):
             output[id_] = self.vectors[idx].astype(float).tolist()
         return output
 
+    def close(self) -> None:
+        """No-op close hook for API parity with other backends."""
+        return None
 
-class _ChromaBackend(_BaseBackend):  # pragma: no cover - optional dependency
+
+class _ChromaBackend(VectorIndexBackend):  # pragma: no cover - optional dependency
     def __init__(self, base_path: Path, name: str) -> None:
         self.root = Path(base_path) / "chroma"
         self.root.mkdir(parents=True, exist_ok=True)
@@ -246,5 +270,15 @@ class _ChromaBackend(_BaseBackend):  # pragma: no cover - optional dependency
                 output[id_] = list(map(float, embeddings[idx]))
         return output
 
+    def close(self) -> None:
+        try:
+            self.client.reset()
+        except Exception:
+            pass
 
-__all__ = ["VectorIndex", "VectorItem"]
+
+__all__ = [
+    "VectorIndex",
+    "VectorIndexBackend",
+    "VectorItem",
+]

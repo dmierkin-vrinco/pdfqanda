@@ -6,35 +6,16 @@ import json
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Callable, Iterable, Sequence
 
-from .vector_index import VectorIndex, VectorItem
+from .migrations import Migration, apply_migrations
+from .vector_index import VectorIndex, VectorIndexBackend, VectorItem
 
 
-class Database:
-    """Lightweight wrapper exposing the few SQL features the project relies on."""
-
-    def __init__(self, path: str) -> None:
-        self.path = self._normalize_path(path)
-        Path(self.path).parent.mkdir(parents=True, exist_ok=True)
-        self.sqlite_conn = sqlite3.connect(self.path)
-        self.sqlite_conn.row_factory = sqlite3.Row
-        index_dir = Path(self.path).with_name(Path(self.path).name + ".index")
-        self.index = VectorIndex(index_dir)
-
-    # ------------------------------------------------------------------
-    @staticmethod
-    def _normalize_path(raw: str) -> str:
-        if raw.startswith("sqlite:///"):
-            return raw[len("sqlite:///") :]
-        return raw
-
-    # ------------------------------------------------------------------
-    def initialize(self) -> None:
-        self._initialize_sqlite()
-
-    def _initialize_sqlite(self) -> None:
-        ddl = """
+_MIGRATIONS: tuple[Migration, ...] = (
+    Migration(
+        "001_base_schema",
+        """
         CREATE TABLE IF NOT EXISTS kb_documents (
             id TEXT PRIMARY KEY,
             title TEXT NOT NULL,
@@ -71,14 +52,90 @@ class Database:
 
         CREATE INDEX IF NOT EXISTS idx_sqlite_markdowns_doc
             ON kb_markdowns(document_id);
+        """,
+    ),
+    Migration(
+        "002_tables_graphics_notes",
         """
-        self.sqlite_conn.executescript(ddl)
-        self.sqlite_conn.commit()
+        CREATE TABLE IF NOT EXISTS kb_tables (
+            id TEXT PRIMARY KEY,
+            document_id TEXT NOT NULL REFERENCES kb_documents(id) ON DELETE CASCADE,
+            section_id TEXT REFERENCES kb_sections(id) ON DELETE SET NULL,
+            caption TEXT,
+            data JSON NOT NULL,
+            meta JSON DEFAULT '{}'
+        );
+
+        CREATE TABLE IF NOT EXISTS kb_graphics (
+            id TEXT PRIMARY KEY,
+            document_id TEXT NOT NULL REFERENCES kb_documents(id) ON DELETE CASCADE,
+            section_id TEXT REFERENCES kb_sections(id) ON DELETE SET NULL,
+            caption TEXT,
+            image_path TEXT NOT NULL,
+            meta JSON DEFAULT '{}'
+        );
+
+        CREATE TABLE IF NOT EXISTS kb_notes (
+            id TEXT PRIMARY KEY,
+            document_id TEXT NOT NULL REFERENCES kb_documents(id) ON DELETE CASCADE,
+            section_id TEXT REFERENCES kb_sections(id) ON DELETE SET NULL,
+            content TEXT NOT NULL,
+            referenced_page INTEGER,
+            meta JSON DEFAULT '{}'
+        );
+        """,
+    ),
+)
+
+
+class Database:
+    """Lightweight wrapper exposing the few SQL features the project relies on."""
+
+    def __init__(
+        self,
+        path: str,
+        *,
+        index_factory: Callable[[Path, str], VectorIndex] | None = None,
+        index_backend: VectorIndexBackend | None = None,
+    ) -> None:
+        self.path = self._normalize_path(path)
+        Path(self.path).parent.mkdir(parents=True, exist_ok=True)
+        self.sqlite_conn = sqlite3.connect(self.path)
+        self.sqlite_conn.row_factory = sqlite3.Row
+        index_dir = Path(self.path).with_name(Path(self.path).name + ".index")
+        if index_factory is not None:
+            self.index = index_factory(index_dir, "kb")
+        else:
+            self.index = VectorIndex(index_dir, backend=index_backend)
+
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _normalize_path(raw: str) -> str:
+        if raw.startswith("sqlite:///"):
+            return raw[len("sqlite:///") :]
+        return raw
+
+    # ------------------------------------------------------------------
+    def initialize(self) -> None:
+        apply_migrations(self.sqlite_conn, _MIGRATIONS)
 
     # Context manager --------------------------------------------------
     @contextmanager
     def connect(self):
         yield self.sqlite_conn
+
+    # Lifecycle --------------------------------------------------------
+    def close(self) -> None:
+        try:
+            self.index.close()
+        finally:
+            self.sqlite_conn.close()
+
+    def __enter__(self):  # pragma: no cover - context manager sugar
+        return self
+
+    def __exit__(self, exc_type, exc, tb):  # pragma: no cover - context manager sugar
+        self.close()
 
     # Mutation helpers -------------------------------------------------
     def delete_document(self, sha256: str) -> None:

@@ -1,4 +1,4 @@
-"""Expert agent that enforces hard citations."""
+"""Expert agent responsible for composing cited answers."""
 
 from __future__ import annotations
 
@@ -6,7 +6,9 @@ import re
 from dataclasses import dataclass
 from typing import Sequence
 
-from .models import ResearchHit
+from ..models import ResearchHit
+
+__all__ = ["CitationError", "Expert"]
 
 
 class CitationError(RuntimeError):

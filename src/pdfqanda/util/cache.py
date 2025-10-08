@@ -6,7 +6,17 @@ import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Sequence
+
+
+def stable_hash(parts: Sequence[str]) -> str:
+    """Return a deterministic SHA256 hash over the provided string parts."""
+
+    digest = hashlib.sha256()
+    for part in parts:
+        digest.update(part.encode("utf-8"))
+        digest.update(b"\x1f")
+    return digest.hexdigest()
 
 
 @dataclass(slots=True)
@@ -19,7 +29,7 @@ class FileCache:
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
     def _key_path(self, namespace: str, key: str) -> Path:
-        digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
+        digest = stable_hash([key])
         return self.base_dir / namespace / f"{digest}.json"
 
     def get(self, namespace: str, key: str) -> Any | None:
@@ -69,3 +79,6 @@ class FileCache:
                         path.rmdir()
                     except OSError:
                         pass
+
+
+__all__ = ["FileCache", "stable_hash"]

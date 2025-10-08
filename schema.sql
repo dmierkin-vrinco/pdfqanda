@@ -36,3 +36,35 @@ CREATE TABLE IF NOT EXISTS kb_markdowns (
 
 CREATE INDEX IF NOT EXISTS idx_sqlite_markdowns_doc
     ON kb_markdowns(document_id);
+
+CREATE TABLE IF NOT EXISTS kb_tables (
+    id TEXT PRIMARY KEY,
+    document_id TEXT NOT NULL REFERENCES kb_documents(id) ON DELETE CASCADE,
+    section_id TEXT REFERENCES kb_sections(id) ON DELETE SET NULL,
+    caption TEXT,
+    data JSON NOT NULL,
+    meta JSON DEFAULT '{}'
+);
+
+CREATE TABLE IF NOT EXISTS kb_graphics (
+    id TEXT PRIMARY KEY,
+    document_id TEXT NOT NULL REFERENCES kb_documents(id) ON DELETE CASCADE,
+    section_id TEXT REFERENCES kb_sections(id) ON DELETE SET NULL,
+    caption TEXT,
+    image_path TEXT NOT NULL,
+    meta JSON DEFAULT '{}'
+);
+
+CREATE TABLE IF NOT EXISTS kb_notes (
+    id TEXT PRIMARY KEY,
+    document_id TEXT NOT NULL REFERENCES kb_documents(id) ON DELETE CASCADE,
+    section_id TEXT REFERENCES kb_sections(id) ON DELETE SET NULL,
+    content TEXT NOT NULL,
+    referenced_page INTEGER,
+    meta JSON DEFAULT '{}'
+);
+
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    id TEXT PRIMARY KEY,
+    applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);

@@ -1,4 +1,4 @@
-"""PDF ingestion pipeline that stores structured chunks in SQLite."""
+"""Ingestion pipeline implementations."""
 
 from __future__ import annotations
 
@@ -11,19 +11,19 @@ from datetime import datetime
 from pathlib import Path
 from typing import Sequence
 
-from .config import get_settings
-from .embedding import build_tsvector
-from .util.cache import FileCache
-from .util.db import Database
-from .util.embeddings import EmbeddingClient
+from ..config import get_settings
+from ..embedding import build_tsvector
+from ..util.cache import FileCache, stable_hash
+from ..util.db import Database
+from ..util.embeddings import EmbeddingClient
 
-_FITZ_AVAILABLE = importlib.util.find_spec("fitz") is not None
-if _FITZ_AVAILABLE:  # pragma: no cover - optional dependency
-    import fitz  # type: ignore[import]
+__all__ = ["Section", "Chunk", "IngestResult", "PdfIngestor"]
 
 
 @dataclass(slots=True)
 class Section:
+    """Represents a logical section within an ingested document."""
+
     id: str
     document_id: str
     title: str
@@ -35,6 +35,8 @@ class Section:
 
 @dataclass(slots=True)
 class Chunk:
+    """A semantic chunk ready for persistence."""
+
     id: str
     document_id: str
     section_id: str
@@ -50,6 +52,8 @@ class Chunk:
 
 @dataclass(slots=True)
 class IngestResult:
+    """Summary of a successful ingestion run."""
+
     document_id: str
     sha256: str
     chunk_count: int
@@ -57,6 +61,8 @@ class IngestResult:
 
 class PdfIngestor:
     """Extracts text from PDFs, segments content, and stores it in the database."""
+
+    _FITZ_AVAILABLE = importlib.util.find_spec("fitz") is not None
 
     def __init__(
         self,
@@ -66,8 +72,11 @@ class PdfIngestor:
         settings = get_settings()
         self.database = database or Database(settings.db_path)
         self.settings = settings
-        self.embedder = embedder or EmbeddingClient(settings.embedding_model, settings.embedding_dim)
+        self.embedder = embedder or EmbeddingClient(
+            settings.embedding_model, settings.embedding_dim
+        )
         self.pdf_cache = FileCache(Path(".cache/pdf"))
+        self.table_cache = FileCache(Path(".cache/tables"))
 
     # ------------------------------------------------------------------
     def ingest(self, pdf_path: Path, title: str | None = None) -> IngestResult:
@@ -82,10 +91,28 @@ class PdfIngestor:
         now = datetime.utcnow().isoformat()
 
         self.database.delete_document(sha256)
-        self.database.insert_document(doc_id=document_id, title=title, sha256=sha256, created_at=now)
+        self.database.insert_document(
+            doc_id=document_id, title=title, sha256=sha256, created_at=now
+        )
 
         pages = self._load_pages(pdf_path, sha256)
-        sections = self._derive_sections(document_id, title, pages)
+        layout_key = stable_hash([sha256, "sections:v1"])
+        cached_sections = self.table_cache.get("layouts", layout_key)
+        if cached_sections:
+            sections = [
+                Section(
+                    id=str(uuid.uuid4()),
+                    document_id=document_id,
+                    title=str(section["title"]),
+                    level=int(section["level"]),
+                    start_page=int(section["start_page"]),
+                    end_page=int(section["end_page"]),
+                    path=str(section["path"]),
+                )
+                for section in cached_sections
+            ]
+        else:
+            sections = self._derive_sections(document_id, title, pages)
         if not sections:
             root_section = Section(
                 id=str(uuid.uuid4()),
@@ -113,6 +140,21 @@ class PdfIngestor:
                 for section in sections
             ]
         )
+        if not cached_sections:
+            self.table_cache.set(
+                "layouts",
+                layout_key,
+                [
+                    {
+                        "title": section.title,
+                        "level": section.level,
+                        "start_page": section.start_page,
+                        "end_page": section.end_page,
+                        "path": section.path,
+                    }
+                    for section in sections
+                ],
+            )
 
         chunks = self._segment(document_id, sections[0], pages)
         embeddings = self.embedder.embed_documents([chunk.content for chunk in chunks])
@@ -150,7 +192,9 @@ class PdfIngestor:
         return pages
 
     def _extract_pages(self, pdf_path: Path) -> list[str]:
-        if _FITZ_AVAILABLE:  # pragma: no cover - requires PyMuPDF
+        if self._FITZ_AVAILABLE:  # pragma: no cover - requires PyMuPDF
+            import fitz  # type: ignore[import]
+
             doc = fitz.open(pdf_path)
             pages = [page.get_text("text") for page in doc]
             doc.close()
@@ -176,7 +220,9 @@ class PdfIngestor:
         text = text.replace("\\(", "(").replace("\\)", ")").replace("\\\\", "\\")
         return text
 
-    def _derive_sections(self, document_id: str, title: str, pages: Sequence[str]) -> list[Section]:
+    def _derive_sections(
+        self, document_id: str, title: str, pages: Sequence[str]
+    ) -> list[Section]:
         if not pages:
             return []
         end_page = max(0, len(pages) - 1)
