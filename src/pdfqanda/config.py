@@ -1,54 +1,55 @@
-"""Configuration helpers for pdfqanda."""
+"""Runtime configuration helpers for pdfqanda."""
 
 from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
+
+
+def _load_env_file() -> None:
+    env_path = Path(".env")
+    if not env_path.exists():
+        return
+    for line in env_path.read_text().splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if "=" not in stripped:
+            continue
+        key, value = stripped.split("=", 1)
+        os.environ.setdefault(key, value)
+
+
+_load_env_file()
 
 
 @dataclass(frozen=True)
 class Settings:
-    """Runtime settings derived from environment variables."""
+    """Typed wrapper around environment-driven configuration."""
 
-    database_url: str
+    db_dsn: str
+    embedding_model: str
+    embedding_dim: int
     chunk_target_tokens: int
     chunk_overlap_ratio: float
-    cache_dir: Path
-    cache_pdf_dir: Path
-    cache_llm_dir: Path
-    cache_emb_dir: Path
-    cache_tables_dir: Path
 
 
-_DEFAULT_CACHE_ROOT = Path(os.environ.get("PDFQANDA_CACHE", ".cache"))
-
-
-def _ensure_dir(path: Path) -> Path:
-    path.mkdir(parents=True, exist_ok=True)
-    return path
-
-
+@lru_cache(maxsize=1)
 def get_settings() -> Settings:
-    """Return cached runtime settings."""
+    """Return cached configuration values loaded from the environment."""
 
-    database_url = os.environ.get("PDFQANDA_DATABASE_URL", "sqlite:///pdfqanda.db")
-    chunk_target_tokens = int(os.environ.get("PDFQANDA_CHUNK_TOKENS", "1000"))
-    overlap_ratio = float(os.environ.get("PDFQANDA_CHUNK_OVERLAP", "0.12"))
-
-    cache_dir = _ensure_dir(_DEFAULT_CACHE_ROOT)
-    cache_pdf = _ensure_dir(cache_dir / "pdf")
-    cache_llm = _ensure_dir(cache_dir / "llm")
-    cache_emb = _ensure_dir(cache_dir / "emb")
-    cache_tables = _ensure_dir(cache_dir / "tables")
+    db_dsn = os.getenv("DB_DSN", "sqlite:///pdfqanda.db")
+    embedding_model = os.getenv("EMBEDDING_MODEL", "text-embedding-3-large")
+    embedding_dim = int(os.getenv("EMBEDDING_DIM", "3072"))
+    chunk_target = int(os.getenv("CHUNK_TARGET_TOKENS", "1000"))
+    overlap_ratio = float(os.getenv("CHUNK_OVERLAP_RATIO", "0.12"))
 
     return Settings(
-        database_url=database_url,
-        chunk_target_tokens=chunk_target_tokens,
+        db_dsn=db_dsn,
+        embedding_model=embedding_model,
+        embedding_dim=embedding_dim,
+        chunk_target_tokens=chunk_target,
         chunk_overlap_ratio=overlap_ratio,
-        cache_dir=cache_dir,
-        cache_pdf_dir=cache_pdf,
-        cache_llm_dir=cache_llm,
-        cache_emb_dir=cache_emb,
-        cache_tables_dir=cache_tables,
     )

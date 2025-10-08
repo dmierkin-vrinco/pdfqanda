@@ -8,12 +8,11 @@ import re
 from functools import lru_cache
 from typing import Iterable, Sequence
 
-EMBEDDING_DIM = 3072
 _TOKEN_PATTERN = re.compile(r"[A-Za-z0-9_]+")
 
 
 @lru_cache(maxsize=4096)
-def deterministic_embedding(text: str) -> tuple[float, ...]:
+def deterministic_embedding(text: str, dim: int = 3072) -> tuple[float, ...]:
     """Return a deterministic pseudo-embedding for ``text``.
 
     The implementation avoids external API dependencies by folding the SHA256
@@ -23,7 +22,7 @@ def deterministic_embedding(text: str) -> tuple[float, ...]:
 
     digest = hashlib.sha256(text.encode("utf-8")).digest()
     values = []
-    for idx in range(EMBEDDING_DIM):
+    for idx in range(dim):
         byte = digest[idx % len(digest)]
         values.append((byte / 255.0) * 2.0 - 1.0)
     return tuple(values)
