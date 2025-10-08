@@ -1,4 +1,4 @@
-"""PDF ingestion pipeline that stores structured chunks in Postgres/SQLite."""
+"""PDF ingestion pipeline that stores structured chunks in SQLite."""
 
 from __future__ import annotations
 
@@ -58,11 +58,15 @@ class IngestResult:
 class PdfIngestor:
     """Extracts text from PDFs, segments content, and stores it in the database."""
 
-    def __init__(self, database: Database | None = None) -> None:
+    def __init__(
+        self,
+        database: Database | None = None,
+        embedder: EmbeddingClient | None = None,
+    ) -> None:
         settings = get_settings()
-        self.database = database or Database(settings.db_dsn)
+        self.database = database or Database(settings.db_path)
         self.settings = settings
-        self.embedder = EmbeddingClient(settings.embedding_model, settings.embedding_dim)
+        self.embedder = embedder or EmbeddingClient(settings.embedding_model, settings.embedding_dim)
         self.pdf_cache = FileCache(Path(".cache/pdf"))
 
     # ------------------------------------------------------------------

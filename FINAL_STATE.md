@@ -3,7 +3,7 @@
 ## 1. Purpose
 
 The **pdfqanda** system is an **agent-driven knowledge engine** that ingests PDFs of any complexity, converts them into structured, queryable knowledge, and enables **citation-based, explainable answers** across text, tables, figures, and notes.
-It fuses robust PDF parsing, structured storage (Postgres + pgvector), multi-agent reasoning (Google A2A + PoML), and deterministic caching for reproducibility.
+It fuses robust PDF parsing, structured storage (SQLite + a dedicated vector index), multi-agent reasoning (Google A2A + PoML), and persistent caching for reproducibility.
 
 ---
 
@@ -24,7 +24,7 @@ It fuses robust PDF parsing, structured storage (Postgres + pgvector), multi-age
 | Layer           | Key Modules                                                            | Purpose                                                       |
 | --------------- | ---------------------------------------------------------------------- | ------------------------------------------------------------- |
 | **Ingestion**   | `text_extract.py`, `tables.py`, `layout.py`, `graphics.py`, `notes.py` | Convert PDF into structured artifacts                         |
-| **Persistence** | Postgres + pgvector                                                    | Store documents, sections, markdowns, notes, graphics, tables |
+| **Persistence** | SQLite + vector index                                                  | Store documents, sections, markdowns, notes, graphics, tables |
 | **Retrieval**   | `researcher.py`                                                        | Hybrid semantic + FTS + SQL search                            |
 | **Reasoning**   | `expert.py`                                                            | Compose answers with citations                                |
 | **Interface**   | CLI + A2A agents                                                       | Ingest / Ask / Peek / SQL                                     |
@@ -32,27 +32,25 @@ It fuses robust PDF parsing, structured storage (Postgres + pgvector), multi-age
 
 ---
 
-## 4. Data Model (Postgres)
+## 4. Data Model (SQLite)
 
 ### Schemas
 
-* `kb` — canonical content
-* `pdf_tables` — dynamically generated SQL tables for large tabular data
+* `kb` — canonical content stored in SQLite tables (`kb_documents`, `kb_sections`, `kb_markdowns`)
+* Vector index — persisted alongside the SQLite file (Chroma or NumPy-based)
 
 ### Key Tables
 
-* **documents** — metadata (`id, title, sha256, meta`)
-* **sections** — hierarchy & page spans (`level, start_page, end_page`)
-* **markdowns** — semantic text chunks (`content, emb VECTOR(1536), tsv`)
-* **notes** — footnotes / annotations (`kind, ref_anchor, content`)
-* **graphics** — images / figures (`bbox, nearby_text, path, sha256`)
-* **tables_metadata** — links to `pdf_tables.*` (`columns_json, units_json`)
+* **kb_documents** — metadata (`id, title, sha256, meta`)
+* **kb_sections** — hierarchy & page spans (`level, start_page, end_page`)
+* **kb_markdowns** — semantic text chunks (`content, emb JSON, tsv`)
+* **vector index** — cosine-normalised embeddings stored outside the database
 
 Indices:
 
-* `HNSW` on embeddings (`cosine`)
-* `GIN` on `tsvector`
-* FKs cascade deletions per document
+- SQLite indexes on document IDs
+- Vector index handles cosine search, database `tsv` payload supports keyword filters
+- Foreign keys cascade deletions per document
 
 ---
 
@@ -113,7 +111,7 @@ Reformats Expert output per user tone/length.
 | **TableAgent**     | detect / merge tables                  | Camelot / Plumber    |
 | **GraphicsAgent**  | extract bbox + caption                 | PyMuPDF              |
 | **SegmenterAgent** | semantic chunking                      | LLM                  |
-| **Researcher**     | search + SQL                           | pgvector + FTS + LLM |
+| **Researcher**     | search + SQL                           | vector index + FTS + LLM |
 | **Expert**         | compose answers                        | GPT-4o-mini          |
 | **UserAgent**      | optional formatting/UI                 | CLI → future GUI     |
 
@@ -127,8 +125,7 @@ All communicate via **A2A protocol**, defined by `agent.json` contracts and **PO
 pdfqanda ingest <pdf_path>       # full parse + DB insert
 pdfqanda ask "<question>"        # run Researcher→Expert flow
 pdfqanda peek <doc|page|section> # inspect extracted content
-pdfqanda sql "<query>"          # direct Postgres SELECT
-pdfqanda dump-tables <doc_id>    # list SQL tables created
+pdfqanda dump-tables <doc_id>    # list table metadata (future use)
 ```
 
 Outputs default to **Markdown**; `--json` flag returns structured payloads.
@@ -147,7 +144,7 @@ Outputs default to **Markdown**; `--json` flag returns structured payloads.
 
 ## 10. Security & Config
 
-* `.env` holds API keys / DB DSN.
+* `.env` holds API keys / DB path.
 * Cache excludes secrets.
 * Logs structured JSON under `runs/` with request IDs.
 * No PII persistence.
@@ -159,7 +156,7 @@ Outputs default to **Markdown**; `--json` flag returns structured payloads.
 | Phase              | Feature                                        | Description                              |
 | ------------------ | ---------------------------------------------- | ---------------------------------------- |
 | **MVP (complete)** | Text + Notes + Graphics extraction; CLI TF-IDF | Local ingestion prototype                |
-| **Phase 2**        | Postgres + pgvector + Hybrid Search            | Replace pickle index                     |
+| **Phase 2**        | SQLite + dedicated vector index                 | Replace pickle index                     |
 | **Phase 3**        | Multi-agent A2A runtime                        | Researcher↔Expert loop with PoML prompts |
 | **Phase 4**        | Vision & OCR Agents                            | Scanned PDFs + captioning + math OCR     |
 | **Phase 5**        | Web/UI layer + User Agent                      | Interactive QA dashboard                 |
@@ -203,5 +200,5 @@ At completion, **pdfqanda** becomes a **self-contained agentic RAG platform** fo
 
 * Reads any PDF → structured DB with full fidelity.
 * Answers questions with citations across text, tables, and figures.
-* Operates locally with deterministic caching and reproducible outputs.
+* Operates locally with persistent caching and reproducible outputs.
 * Fully extensible to vision, OCR, and multi-document reasoning.

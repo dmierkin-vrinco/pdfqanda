@@ -27,11 +27,15 @@ class RetrievalHit:
 class Retriever:
     """Run vector search with optional full-text filtering."""
 
-    def __init__(self, database: Database | None = None) -> None:
+    def __init__(
+        self,
+        database: Database | None = None,
+        embedder: EmbeddingClient | None = None,
+    ) -> None:
         settings = get_settings()
-        self.database = database or Database(settings.db_dsn)
+        self.database = database or Database(settings.db_path)
         self.settings = settings
-        self.embedder = EmbeddingClient(settings.embedding_model, settings.embedding_dim)
+        self.embedder = embedder or EmbeddingClient(settings.embedding_model, settings.embedding_dim)
 
     def search(self, query: str, k: int = 6) -> list[RetrievalHit]:
         query = query.strip()

@@ -6,6 +6,7 @@ import os
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
+from urllib.parse import unquote_plus
 
 
 def _load_env_file() -> None:
@@ -29,27 +30,40 @@ _load_env_file()
 class Settings:
     """Typed wrapper around environment-driven configuration."""
 
-    db_dsn: str
+    db_path: str
     embedding_model: str
     embedding_dim: int
     chunk_target_tokens: int
     chunk_overlap_ratio: float
 
 
+def _resolve_db_path(raw: str | None) -> str:
+    if not raw:
+        return "pdfqanda.db"
+    if raw.startswith("sqlite:///"):
+        raw = raw[len("sqlite:///") :]
+    if raw.startswith("file://"):
+        raw = unquote_plus(raw[len("file://") :])
+    return raw
+
+
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     """Return cached configuration values loaded from the environment."""
 
-    db_dsn = os.getenv("DB_DSN", "sqlite:///pdfqanda.db")
+    db_path = _resolve_db_path(os.getenv("DB_PATH") or os.getenv("DB_DSN"))
     embedding_model = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
     embedding_dim = int(os.getenv("EMBEDDING_DIM", "1536"))
     chunk_target = int(os.getenv("CHUNK_TARGET_TOKENS", "1000"))
     overlap_ratio = float(os.getenv("CHUNK_OVERLAP_RATIO", "0.12"))
 
     return Settings(
-        db_dsn=db_dsn,
+        db_path=db_path,
         embedding_model=embedding_model,
         embedding_dim=embedding_dim,
         chunk_target_tokens=chunk_target,
         chunk_overlap_ratio=overlap_ratio,
     )
+
+
+__all__ = ["Settings", "get_settings"]

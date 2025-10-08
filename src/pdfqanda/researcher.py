@@ -6,9 +6,11 @@ import json
 from dataclasses import dataclass
 from typing import Sequence
 
+from .config import get_settings
 from .db import Database
-from .embedding import build_tsvector, count_term_hits, deterministic_embedding, cosine_similarity
+from .embedding import build_tsvector, count_term_hits, cosine_similarity
 from .models import ResearchHit
+from .util.embeddings import EmbeddingClient
 
 
 @dataclass(slots=True)
@@ -23,8 +25,10 @@ class ResearchOutput:
 class Researcher:
     """Performs hybrid semantic + lexical retrieval with optional SQL scaffolding."""
 
-    def __init__(self, database: Database) -> None:
+    def __init__(self, database: Database, embedder: EmbeddingClient | None = None) -> None:
+        settings = get_settings()
         self.database = database
+        self.embedder = embedder or EmbeddingClient(settings.embedding_model, settings.embedding_dim)
 
     def search(self, question: str, top_k: int = 6) -> ResearchOutput:
         """Search the knowledge base and return ranked evidence snippets."""
@@ -32,14 +36,14 @@ class Researcher:
         if not question.strip():
             return ResearchOutput(hits=[], exhausted=True)
 
-        query_embedding = deterministic_embedding(question)
+        query_embedding = self.embedder.embed_query(question)
         rows = self.database.fetch_markdowns()
         scored = []
         for row in rows:
             embedding_blob = row["emb"]
             if isinstance(embedding_blob, str):
                 embedding = json.loads(embedding_blob)
-            else:  # pragma: no cover - postgres vector adapters
+            else:  # pragma: no cover - legacy vector adapters
                 embedding = list(embedding_blob)
             score = cosine_similarity(query_embedding, embedding)
             scored.append((score, row, embedding))
