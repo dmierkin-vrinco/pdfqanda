@@ -1,9 +1,10 @@
-"""Domain models for PDF page artifacts."""
+"""Domain models used across ingestion and retrieval pipelines."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Literal
+from datetime import datetime
+from typing import Any, Literal, Sequence
 
 
 @dataclass(slots=True)
@@ -82,3 +83,105 @@ class Page:
             "notes": [note.to_dict() for note in self.notes],
             "graphics": [graphic.to_dict() for graphic in self.graphics],
         }
+
+
+@dataclass(slots=True)
+class DocumentRecord:
+    """Canonical representation of a document ready for persistence."""
+
+    id: str
+    title: str
+    sha256: str
+    meta: dict[str, Any]
+    created_at: datetime
+
+
+@dataclass(slots=True)
+class SectionRecord:
+    """Logical section within a document outline."""
+
+    id: str
+    document_id: str
+    title: str
+    level: int
+    start_page: int
+    end_page: int
+    path: str
+    parent_id: str | None = None
+    meta: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class MarkdownChunk:
+    """Semantic chunk of text produced by the segmenter."""
+
+    id: str
+    document_id: str
+    section_id: str | None
+    content: str
+    token_count: int
+    char_start: int
+    char_end: int
+    start_page: int
+    end_page: int
+    start_line: int
+    end_line: int
+    embedding: Sequence[float]
+    tsv: str
+
+
+@dataclass(slots=True)
+class NoteRecord:
+    """Note persisted in the database."""
+
+    id: str
+    document_id: str
+    section_id: str | None
+    kind: str
+    ref_anchor: str | None
+    content: str
+    page: int | None
+    bbox: Sequence[float] | None
+
+
+@dataclass(slots=True)
+class GraphicRecord:
+    """Graphic metadata persisted in the database."""
+
+    id: str
+    document_id: str
+    section_id: str | None
+    caption: str | None
+    nearby_text: str
+    path: str
+    sha256: str
+    page: int | None
+    bbox: Sequence[float] | None
+
+
+@dataclass(slots=True)
+class TableMetadataRecord:
+    """Metadata describing an extracted table."""
+
+    id: str
+    document_id: str
+    section_id: str | None
+    table_name: str
+    caption: str | None
+    columns_json: dict[str, Any] | list[Any] | None
+    units_json: dict[str, Any] | list[Any] | None
+
+
+@dataclass(slots=True)
+class ResearchHit:
+    """Result returned by the Researcher hybrid retrieval pipeline."""
+
+    document_id: str
+    section_id: str | None
+    content: str
+    score: float
+    citation: str
+    start_page: int
+    end_page: int
+    start_line: int
+    end_line: int

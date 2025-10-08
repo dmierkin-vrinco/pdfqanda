@@ -1,32 +1,34 @@
 # pdfqanda
 
-pdfqanda is a lightweight retrieval-based assistant that lets you ask questions about the
-contents of your local PDF documents. The project provides utilities to extract text and page
-metadata, break text into overlapping chunks, index those chunks with a TF-IDF vector store, and
-query for the most relevant excerpts. Text extraction now prefers PyMuPDF for fast, layout-aware
-parsing while retaining a content-stream fallback for environments where PyMuPDF is unavailable.
+`pdfqanda` turns local PDFs into a cite-everything knowledge base. The M1 skeleton
+ships a deterministic ingestion pipeline, a Postgres-friendly schema, and a
+hybrid Researcher→Expert retrieval flow that refuses to answer without
+citations.
 
-During ingestion pdfqanda also produces page-level “artifacts” that capture detected text blocks,
-footnotes, and graphics. These artifacts live under `artifacts/{doc_hash}.json` with any rendered
-graphics stored alongside them in `artifacts/{doc_hash}/graphics/`. Rasterized page images and block
-caches are stored under `.cache/pdf/{doc_hash}/` to avoid redundant work across runs.
+## Highlights
 
-## Features
-
-- Extract text from one or more PDF files using a PyMuPDF-powered fast path with a content-stream
-  fallback.
-- Split long documents into overlapping text chunks for improved retrieval.
-- Index text chunks with a TF-IDF vectorizer and cosine similarity search.
-- Command line interface for building indexes, asking questions, and inspecting detected page
-  metadata.
-- Optional JSON export of retrieved answers for downstream automation.
-- Per-document artifact generation with normalized bounding boxes for notes and graphics.
+- **Canonical schema** — `schema.sql` provisions `kb.*` and `pdf_tables.*` with
+  pgvector-compatible embeddings and `tsvector` full text search indices.
+- **Deterministic ingestion** — PyMuPDF powered extraction with cached blocks,
+  footnote and graphic detection, and semantic segmentation (~1k token windows,
+  12% overlap). Intermediate artifacts, embeddings, and table metadata are
+  cached under `.cache/`.
+- **Hybrid retrieval** — the Researcher agent ranks vector + lexical hits,
+  surfaces reranked evidence, and scaffolds guarded `SELECT` SQL for table
+  follow-ups.
+- **Hard citation enforcement** — the Expert agent refuses to emit Markdown
+  answers unless every bullet carries a `【doc:…】` citation.
+- **CLI** — `pdfqanda ingest` pushes a document into the knowledge base; `pdfqanda
+  ask` runs the Researcher→Expert chain and prints cited Markdown (with optional
+  JSON export).
 
 ## Getting Started
 
 ### Prerequisites
 
-- Python 3.10 or newer.
+- Python 3.10+
+- Optional: Postgres 15+ with the [pgvector](https://github.com/pgvector/pgvector)
+  extension enabled.
 
 ### Installation
 
@@ -34,58 +36,59 @@ caches are stored under `.cache/pdf/{doc_hash}/` to avoid redundant work across 
 pip install -e .[dev]
 ```
 
-### Building an Index
+### Database
+
+By default the CLI uses `sqlite:///pdfqanda.db`. To target Postgres set
+`PDFQANDA_DATABASE_URL` before running commands:
 
 ```bash
-pdfqanda build path/to/document.pdf path/to/another.pdf --output my-index.pkl
+export PDFQANDA_DATABASE_URL="postgresql://user:password@localhost:5432/pdfqanda"
 ```
 
-In addition to writing the TF-IDF index the build command emits per-document artifacts in the
-`artifacts/` directory and caches rasterized pages in `.cache/pdf/` for faster re-processing.
+Run the schema once (for Postgres deployments):
+
+```bash
+psql "$PDFQANDA_DATABASE_URL" -f schema.sql
+```
+
+### Ingesting a PDF
+
+```bash
+pdfqanda ingest path/to/document.pdf
+```
+
+This extracts pages, notes, graphics, and semantic chunks, writes canonical rows
+in `kb.*`, and caches artifacts beneath `.cache/` (including normalized page
+metadata, segmentation JSON, and deterministic embeddings).
 
 ### Asking a Question
 
 ```bash
-pdfqanda ask --index my-index.pkl "What is the main conclusion?"
+pdfqanda ask "What is the executive summary?"
 ```
 
-Answers are displayed in a table sorted by cosine similarity score. You can also export the
-results to JSON:
+The Researcher retrieves hybrid evidence, the Expert assembles Markdown with
+citations, and the CLI prints the answer. Use `--json` for structured output.
 
-```bash
-pdfqanda ask --index my-index.pkl "Summarize section 3" --json-output answers.json
-```
-
-### Inspecting Notes and Graphics
-
-Use `pdfqanda peek` to quickly review extracted footnotes and graphics metadata without building an
-index:
-
-```bash
-pdfqanda peek path/to/document.pdf --page 2
-```
-
-This command prints normalized bounding boxes, detected note markers, nearby text for graphics, and
-paths to the rendered image snippets saved under `artifacts/{doc_hash}/graphics/`.
-
-## Development
-
-### Running Tests
+## Testing
 
 ```bash
 pytest
 ```
 
-> **Note**
-> The historical `tests/test_fedex_rates.py` checks currently fail because the baseline TF-IDF
-> engine is unchanged; this is expected for the project in its present state.
+The smoke suite ingests a synthetic PDF, verifies vectors land in
+`kb_markdowns`, exercises the Researcher→Expert flow, and ensures missing
+citations hard-fail.
 
-### Linting
+## Development Notes
 
-```bash
-ruff check .
-```
+- Cached artifacts live under `.cache/pdf`, `.cache/llm`, `.cache/emb`, and
+  `.cache/tables`.
+- Embeddings use a deterministic SHA256-based projection (stand-in for
+  `text-embedding-3-large`) so unit tests remain offline and reproducible.
+- The Researcher enforces SELECT-only SQL scaffolding and returns an `exhausted`
+  flag when fewer results than requested are available.
 
 ## License
 
-This project is licensed under the terms of the MIT License. See [LICENSE](LICENSE) for details.
+MIT — see [LICENSE](LICENSE).
