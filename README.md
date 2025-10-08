@@ -53,6 +53,11 @@ psql "$PDFQANDA_DATABASE_URL" -f schema.sql
 
 ### Ingesting a PDF
 
+If you just want to see the pipeline end-to-end, the repository ships a
+curated [`input/sample.pdf`](input/sample.pdf) fixture that spans narrative
+text, tables, and annotated graphics. It doubles as the integration fixture used
+by the test suite, so running the commands below will match what CI exercises.
+
 ```bash
 pdfqanda ingest path/to/document.pdf
 ```
@@ -76,7 +81,7 @@ citations, and the CLI prints the answer. Use `--json` for structured output.
 pytest
 ```
 
-The smoke suite ingests a synthetic PDF, verifies vectors land in
+The smoke suite ingests the bundled sample PDF, verifies vectors land in
 `kb_markdowns`, exercises the Researcher→Expert flow, and ensures missing
 citations hard-fail.
 
