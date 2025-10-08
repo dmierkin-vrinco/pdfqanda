@@ -6,11 +6,13 @@ import json
 from dataclasses import dataclass
 from typing import Sequence
 
-from .config import get_settings
-from .db import Database
-from .embedding import build_tsvector, count_term_hits, cosine_similarity
-from .models import ResearchHit
-from .util.embeddings import EmbeddingClient
+from ..config import get_settings
+from ..db import Database
+from ..embedding import build_tsvector, count_term_hits, cosine_similarity
+from ..models import ResearchHit
+from ..util.embeddings import EmbeddingClient
+
+__all__ = ["ResearchOutput", "Researcher"]
 
 
 @dataclass(slots=True)
@@ -28,7 +30,9 @@ class Researcher:
     def __init__(self, database: Database, embedder: EmbeddingClient | None = None) -> None:
         settings = get_settings()
         self.database = database
-        self.embedder = embedder or EmbeddingClient(settings.embedding_model, settings.embedding_dim)
+        self.embedder = embedder or EmbeddingClient(
+            settings.embedding_model, settings.embedding_dim
+        )
 
     def search(self, question: str, top_k: int = 6) -> ResearchOutput:
         """Search the knowledge base and return ranked evidence snippets."""

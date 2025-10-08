@@ -19,6 +19,7 @@ def test_vector_index_round_trip(tmp_path):
     index.delete(["a"])
     hits = index.search([1.0, 0.0], limit=2)
     assert hits and hits[0][0] == "b"
+    index.close()
 
 
 def test_database_updates_vector_index(tmp_path):
@@ -66,3 +67,23 @@ def test_database_updates_vector_index(tmp_path):
     database.delete_document("abc")
     assert database.index.count() == 0
     assert database.vector_search([1.0, 0.0], limit=1) == []
+    database.close()
+
+
+def test_initialize_applies_migrations(tmp_path):
+    db_path = tmp_path / "kb.sqlite"
+    database = Database(str(db_path))
+    database.initialize()
+
+    cursor = database.sqlite_conn.cursor()
+    for table in ("kb_tables", "kb_graphics", "kb_notes", "schema_migrations"):
+        cursor.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name = ?",
+            (table,),
+        )
+        assert cursor.fetchone(), f"{table} table missing"
+
+    cursor.execute("SELECT COUNT(*) FROM schema_migrations")
+    applied = cursor.fetchone()[0]
+    assert applied >= 2
+    database.close()
