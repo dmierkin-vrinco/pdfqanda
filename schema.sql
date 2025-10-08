@@ -1,5 +1,21 @@
 -- Canonical database schema for pdfqanda knowledge base.
 -- Schema: kb
+
+-- Optional extensions (Postgres only). These commands are wrapped so they can be
+-- executed on other engines without failing.
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_catalog.pg_namespace WHERE nspname = 'pg_catalog') THEN
+        EXECUTE 'CREATE EXTENSION IF NOT EXISTS vector';
+        EXECUTE 'CREATE EXTENSION IF NOT EXISTS pg_trgm';
+    END IF;
+EXCEPTION
+    WHEN undefined_table THEN NULL;
+    WHEN undefined_function THEN NULL;
+    WHEN insufficient_privilege THEN NULL;
+END
+$$;
+
 CREATE SCHEMA IF NOT EXISTS kb;
 CREATE SCHEMA IF NOT EXISTS pdf_tables;
 

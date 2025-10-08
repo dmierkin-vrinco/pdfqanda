@@ -6,15 +6,16 @@ schema, and a CLI for loading PDFs and retrieving cited snippets.
 
 ## Highlights
 
-- **Canonical schema** — `db/schema.sql` provisions `kb.*` tables with
+- **Canonical schema** — `schema.sql` provisions `kb.*` tables with
   pgvector-compatible embedding columns, HNSW indexes, and `tsvector` full-text
   search triggers.
-- **Deterministic ingestion** — PyMuPDF-powered extraction produces paragraph
-  chunks (~1k token windows with ~12 % overlap), stores them in Postgres (or a
-  SQLite fallback), and populates embeddings via the deterministic stand-in in
-  `embedding.py`.
+- **Deterministic ingestion** — PyMuPDF-powered extraction (with a lightweight
+  pure-Python fallback) produces paragraph chunks (~1k token windows with ~12 %
+  overlap), stores them in Postgres (or a SQLite fallback), and populates
+  embeddings via the deterministic stand-in in `embedding.py`.
 - **Vector + lexical retrieval** — `Retriever.search` runs cosine similarity via
-  pgvector and applies keyword bonuses using full-text search.
+  pgvector (or a cosine implementation on SQLite) and can optionally filter on
+  keyword matches using the stored `tsv` payloads.
 - **CLI** — `pdfqanda db init` creates schemas, `pdfqanda ingest` pushes a PDF
   into the knowledge base, and `pdfqanda ask` prints the top cited snippets.
 
@@ -62,8 +63,8 @@ deterministic embeddings alongside the text chunks.
 pdfqanda ask "What is the executive summary?"
 ```
 
-The retriever returns the highest-scoring chunks along with proto-citations in
-the form `【doc:… §… p.…】`.
+The retriever returns the highest-scoring chunks along with citations in the
+form `【doc:… §… p.…】`.
 
 ## Testing
 
