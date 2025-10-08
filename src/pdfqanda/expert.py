@@ -42,7 +42,8 @@ class Expert:
         text = content.strip()
         if not text:
             return ""
-        sentences = self.SENTENCE_REGEX.split(text)
+        normalized = " ".join(text.split())
+        sentences = self.SENTENCE_REGEX.split(normalized)
         selected = sentences[: self.max_sentences]
         summary = " ".join(sentence.strip() for sentence in selected if sentence.strip())
         return summary[:500]
